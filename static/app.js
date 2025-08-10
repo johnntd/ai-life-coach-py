@@ -24,6 +24,176 @@ let cooldown = false;
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
 
 // ---- Helpers ----
+async function prewarmAudio() {
+  // Some browsers (esp. iOS/Chrome) require a user gesture before audio output.
+  try {
+    // Create a super-short silent buffer and play it once to unlock audio.
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state === "suspended") await ctx.resume();
+    const buf = ctx.createBuffer(1, 1, 22050); // 1 frame of silence
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    src.start(0);
+    // Also poke <audio> element with 1ms silent blob
+    const silentBlob = new Blob([new Uint8Array([0])], { type: "audio/mpeg" });
+    const url = URL.createObjectURL(silentBlob);
+    $("#ttsAudio").src = url;
+    // Try playing and immediately pause to satisfy the gesture requirement
+    await $("#ttsAudio").play().catch(() => {});
+    $("#ttsAudio").pause();
+  } catch (e) {
+    // It's fine if this fails; we'll rely on the next play attempt
+    console.debug("prewarmAudio noop:", e?.message || e);
+  }
+}
+
+async function speak(text, { voice } = {}) {
+  cooldown = true;
+  setTalking(true);
+  setStatus("Speaking…");
+
+  const res = await fetch("/tts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      text,
+      voice: voice || undefined,
+      model: undefined,
+      format: "mp3",
+    }),
+  });
+
+  if (!res.ok) {
+    setTalking(false);
+    cooldown = false;
+    throw new Error("tts failed");
+  }
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  audioEl.src = url;
+
+  // Try multiple play attempts to ride over transient autoplay blocks
+  let played = false;
+  for (let i = 0; i < 2; i++) {
+    try {
+      await audioEl.play();
+      played = true;
+      break;
+    } catch (err) {
+      // Give browser a moment to settle if it just resumed audio context
+      await sleep(200);
+    }
+  }
+  if (!played) {
+    setTalking(false);
+    cooldown = false;
+    throw new Error("audio play() blocked");
+  }
+
+  await new Promise((resolve) => {
+    audioEl.onended = resolve;
+    audioEl.onerror = resolve;
+  });
+
+  setTalking(false);
+  setStatus("Listening…");
+  await sleep(IS_IOS ? 1800 : 1200); // echo-guard tail
+  cooldown = false;
+}
+
+async function handsFree() {
+  if (running) return;
+  running = true;
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+
+  try {
+    // Make sure we have a user gesture: Start button clicked.
+    // Use that gesture to pre-warm audio before first TTS.
+    await prewarmAudio();
+
+    setStatus("Starting…");
+    appendBubble("you", "(Starting)");
+
+    const seed = await callChat({ include_seed: true });
+    modelEl.textContent = `Model: ${seed.model_used || seed.model || "?"}`;
+
+    if (!seed.reply) throw new Error("empty seed");
+
+    appendBubble("coach", seed.reply);
+    history.push({ sender: "coach", text: seed.reply });
+    lastCoach = seed.reply;
+
+    try {
+      await speak(seed.reply, {});
+    } catch (e) {
+      // If TTS or play failed, show one friendly line and stop cleanly
+      appendBubble("coach", "I had trouble starting. Try again?");
+      setStatus("Idle");
+      running = false;
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      return;
+    }
+  } catch (e) {
+    console.error("seed failed", e);
+    appendBubble("coach", "I had trouble starting. Try again?");
+    setStatus("Idle");
+    running = false;
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    return;
+  }
+
+  // normal loop
+  while (running) {
+    try {
+      if (cooldown) { await sleep(120); continue; }
+      setStatus("Listening…");
+      let transcript = "";
+      try {
+        transcript = await listenOnce(langEl.value || "en-US", 12000);
+      } catch {
+        // timeout/no-speech → re-loop
+        continue;
+      }
+      transcript = (transcript || "").trim();
+
+      if (lastCoach && transcript && lastCoach.toLowerCase().includes(transcript.toLowerCase())) {
+        // echo guard
+        continue;
+      }
+
+      if (transcript) {
+        appendBubble("you", transcript);
+        history.push({ sender: "you", text: transcript });
+      }
+
+      const res = await callChat({ user_text: transcript, include_seed: false });
+      modelEl.textContent = `Model: ${res.model_used || res.model || "?"}`;
+      const reply = (res.reply || "").trim();
+      if (!reply) continue;
+
+      appendBubble("coach", reply);
+      history.push({ sender: "coach", text: reply });
+      lastCoach = reply;
+
+      await speak(reply, {});
+      await sleep(80);
+    } catch (e) {
+      console.error("loop error", e);
+      appendBubble("coach", "Hmm, I lost you for a second. Let’s try again?");
+      await sleep(400);
+    }
+  }
+
+  setStatus("Stopped");
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+}
+
 function appendBubble(sender, text) {
   const div = document.createElement("div");
   div.className = `bubble ${sender === "you" ? "you" : "coach"}`;
