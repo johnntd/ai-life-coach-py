@@ -2,98 +2,126 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AI Life Coach</title>
-  <link rel="icon" href="/static/favicon.ico" />
   <style>
-    :root{
-      --bg:#0b1220;--ink:#e5e7eb;--muted:#9ca3af;--card:#0f172a;--pill:#111827;
-      --coach:#d1fae5;--you:#bfdbfe
+    :root {
+      --bg: #0f172a;        /* slate-900 */
+      --panel: #111827;     /* gray-900 */
+      --ink: #e5e7eb;       /* gray-200 */
+      --ink-dim: #9ca3af;   /* gray-400 */
+      --accent: #2563eb;    /* blue-600 */
+      --accent-2: #374151;  /* gray-700 */
+      --bubble-you: #bfdbfe;   /* blue-200 */
+      --bubble-coach: #d1fae5; /* emerald-100 */
     }
-    *{box-sizing:border-box}
-    html,body{height:100%}
-    body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.4 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto}
-    .wrap{max-width:1100px;margin:24px auto;padding:0 16px}
-    header{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-    h1{margin:0;font-size:22px}
-    .pill{background:var(--pill);border:1px solid #1f2937;border-radius:999px;padding:6px 10px;color:var(--muted);font-size:12px}
-    .card{background:var(--card);border:1px solid #1f2937;border-radius:14px;padding:12px}
-    .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-    .grow{flex:1}
-    .btn{background:#2563eb;border:0;color:white;padding:10px 14px;border-radius:10px;cursor:pointer}
-    .btn.secondary{background:#374151}
-    .btn:disabled{opacity:.5;cursor:not-allowed}
-    input,select{background:#0b1220;border:1px solid #1f2937;color:var(--ink);padding:10px;border-radius:10px}
-    .log{height:480px;overflow:auto;display:flex;flex-direction:column;gap:8px}
-    .bubble{padding:10px 12px;border-radius:10px;max-width:85%}
-    .you{background:var(--you);color:#0b1220;align-self:flex-end}
-    .coach{background:var(--coach);color:#0b1220;align-self:flex-start}
-    footer{margin-top:8px;color:var(--muted);font-size:12px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
-    .avatar{width:56px;height:56px;border-radius:12px;object-fit:cover;border:1px solid #1f2937}
-
-    /* Non‑blocking mic toast (replaces the old fullscreen blur) */
-    #consentToast{
-      position:fixed;left:50%;transform:translateX(-50%);
-      bottom:22px;z-index:50;display:none;
-      background:#111827;border:1px solid #1f2937;border-radius:14px;
-      padding:14px 16px;max-width:520px;width:92%;
-      box-shadow:0 10px 30px rgba(0,0,0,.35)
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; background: var(--bg); color: var(--ink);
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Apple Color Emoji", "Segoe UI Emoji";
     }
-    #consentToast.show{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
-    #consentToast .text{color:#d1d5db;font-size:14px}
-    #consentToast .actions{display:flex;gap:8px;align-items:center}
-    #consentToast .link{background:transparent;border:0;color:#9ca3af;cursor:pointer}
+    .wrap { max-width: 1060px; margin: 0 auto; padding: 12px 16px 28px; }
+    header { display:flex; align-items:center; gap:12px; margin-bottom: 8px; }
+    #avatar {
+      width:42px; height:42px; border-radius:50%; object-fit:cover;
+      border:2px solid var(--accent);
+      transition: box-shadow .25s ease;
+    }
+    #avatar.talking { box-shadow:0 0 0 6px rgba(37,99,235,.25); }
+    .title { font-weight:600; font-size:20px; margin-right:auto; }
+    .status {
+      font-size:12px; color: var(--ink-dim); padding:2px 8px; border-radius:999px;
+      background: #0b1220; border:1px solid #1f2937;
+    }
+    .chip {
+      font-size:12px; padding:4px 8px; border-radius:999px; background:#0b1220; border:1px solid #1f2937;
+    }
+    .controls { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin:8px 0 14px; }
+    .controls .group { display:flex; gap:8px; align-items:center; }
+    input[type="text"], select {
+      background:#0b1220; color:var(--ink);
+      border:1px solid #1f2937; border-radius:10px; padding:8px 10px; outline:none;
+    }
+    button {
+      background: var(--accent); color:white; border:none; border-radius:10px;
+      padding:8px 14px; font-weight:600; cursor:pointer;
+    }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    .btn-muted { background: var(--accent-2); }
+    .panel {
+      background: var(--panel);
+      border:1px solid #1f2937; border-radius:14px; min-height:380px;
+      padding:12px; overflow:auto;
+    }
+    .bubble {
+      background: #111827; color:#0b1220;
+      border-radius:10px; padding:10px 12px; margin:10px 0;
+      border:1px solid #1f2937; color: var(--bg);
+    }
+    .bubble.you   { background: var(--bubble-you); }
+    .bubble.coach { background: var(--bubble-coach); }
+    .composer { display:flex; gap:8px; margin-top:12px; }
+    #text { flex:1; }
+    footer { margin-top:10px; font-size:12px; color:var(--ink-dim); }
+    @media (max-width: 640px){
+      .wrap { padding: 8px 10px 24px; }
+      .panel { min-height: 50vh; }
+    }
   </style>
 </head>
 <body>
   <div class="wrap">
     <header>
-      <img src="/static/avatar.jpg" class="avatar" alt="Miss Sunny" />
-      <h1 style="margin-right:8px">AI Life Coach</h1>
-      <span class="pill" id="status">Idle</span>
-      <span class="pill" id="model">Model: …</span>
-      <div class="grow"></div>
-      <label class="pill">
-        <input type="checkbox" id="teen" /> Teen Mode
-      </label>
-      <input id="name" placeholder="Child name (e.g., Emily)" value="Emily" />
-      <select id="age">
-        <option>3</option><option>4</option><option selected>5</option>
-        <option>6</option><option>7</option><option>8</option>
-      </select>
-      <select id="lang">
-        <option value="en-US" selected>English</option>
-        <option value="vi-VN">Tiếng Việt</option>
-      </select>
-      <button id="start" class="btn">▶️ Start</button>
-      <button id="stop" class="btn secondary" disabled>⏹  Stop</button>
+      <img id="avatar" src="https://picsum.photos/seed/sunny/128" alt="Miss Sunny" />
+      <div class="title">AI Life Coach</div>
+      <span id="status" class="status">Idle</span>
+      <span id="model" class="chip">Model: gpt-4o</span>
     </header>
 
-    <section class="card log" id="log"></section>
+    <div class="controls">
+      <div class="group">
+        <input id="name" type="text" placeholder="Name" value="Emily" />
+        <select id="age">
+          <option>4</option><option selected>5</option><option>6</option><option>7</option><option>8</option><option>9</option><option>10</option><option>11</option><option>12</option>
+        </select>
+        <label class="group" style="gap:6px;">
+          <input id="teen" type="checkbox" /> Teen Mode
+        </label>
+        <select id="lang">
+          <option value="en-US" selected>English</option>
+          <option value="vi-VN">Vietnamese</option>
+          <option value="es-ES">Spanish</option>
+          <option value="ja-JP">Japanese</option>
+          <option value="ko-KR">Korean</option>
+          <option value="fr-FR">French</option>
+          <option value="de-DE">German</option>
+        </select>
+      </div>
+      <div class="group" style="margin-left:auto;">
+        <button id="start">▶ Start</button>
+        <button id="stop" class="btn-muted" disabled>■ Stop</button>
+      </div>
+    </div>
 
-    <div class="row" style="margin-top:10px">
-      <input id="text" class="grow" placeholder="(Optional) type a message & Enter" />
-      <button id="send" class="btn secondary">Send</button>
+    <div id="log" class="panel"></div>
+
+    <div class="composer">
+      <input id="text" type="text" placeholder="(Optional) type a message & Enter" />
+      <button id="send">Send</button>
     </div>
 
     <footer>
-      <div>Hands‑free after Start. Mic auto‑pauses during coach speech.</div>
-      <div>API: <span id="api">/chat</span></div>
+      Hands-free after Start. Mic auto-pauses during coach speech.<br />
+      Tip for iPhone/iPad: open this app via your HTTPS Cloudflare link; iOS may block mic on plain <code>http://192.168…</code>.
+      <span style="float:right">API: /chat</span>
     </footer>
+
+    <!-- Hidden audio element for TTS playback -->
+    <audio id="ttsAudio" preload="auto"></audio>
   </div>
 
-  <!-- Single audio element for TTS playback -->
-  <audio id="ttsAudio" preload="none"></audio>
-
-  <!-- Non‑blocking mic toast -->
-  <div id="consentToast">
-    <div class="text">Enable mic so Miss Sunny can speak and listen hands‑free.</div>
-    <div class="actions">
-      <button id="enableStart" class="btn">Enable & Start</button>
-      <button id="skipEnable" class="link">Not now</button>
-    </div>
-  </div>
-
-  <script src="/static/app.js"></script>
+  <!-- Keep the version suffix so you can hard-refresh on iOS -->
+  <script src="/static/app.js?v=ios-3" defer></script>
 </body>
 </html>
