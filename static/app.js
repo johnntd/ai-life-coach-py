@@ -1,11 +1,13 @@
 // static/app.js
 // ─────────────────────────────────────────────────────────────────────────────
-// What’s new (keeping all IDs/handlers and prior behavior):
-// • Deterministic intro (Hi → ask name → ask age → then assessment).
-// • Faster listening via lightweight silence detection (VAD) for the fallback.
-// • Auto-extract child name/age from spoken text and update the UI live.
-// • Persist profile + a tiny rolling chat memory to localStorage.
-// • Send client_id + profile on every /chat so server can remember across runs.
+// Focus: lower latency listening while preserving all prior UI/logic.
+// Key improvements:
+//  • Calibrated VAD (ambient noise → dynamic threshold) for fast, reliable EOU.
+//  • Shorter silence window (default 420ms) + max-utterance cutoff.
+//  • MediaRecorder timeslice (200ms) → tiny chunks → quick STT.
+//  • Web Speech API continuous with interim + watchdog restart.
+//  • Better mic constraints (AEC/NS/AGC).
+// Everything else remains: IDs, handlers, bubbles, memory, deterministic intro.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const $        = (s)=>document.querySelector(s);
@@ -23,59 +25,68 @@ const textEl   = $("#text");
 const audioEl  = $("#ttsAudio");
 const avatarEl = $("#avatar");
 
-// ── Client identity & local memory ───────────────────────────────────────────
+// ── Local identity/memory (unchanged behavior) ──────────────────────────────
 function getClientId(){
   let id = localStorage.getItem("coach_client_id");
-  if (!id){
-    id = crypto.randomUUID();
-    localStorage.setItem("coach_client_id", id);
-  }
+  if (!id){ id = crypto.randomUUID(); localStorage.setItem("coach_client_id", id); }
   return id;
 }
 const CLIENT_ID = getClientId();
 
 function loadProfile(){
-  try{
-    const p = JSON.parse(localStorage.getItem("coach_profile")||"{}");
-    return { name:p.name||"", age: Number(p.age||0) || undefined, notes: p.notes||"" };
-  }catch(_){ return { name:"", age:undefined, notes:"" }; }
+  try{ return JSON.parse(localStorage.getItem("coach_profile")||"{}"); }
+  catch(_){ return {}; }
 }
-function saveProfile(p){
-  localStorage.setItem("coach_profile", JSON.stringify(p||{}));
-}
+function saveProfile(p){ localStorage.setItem("coach_profile", JSON.stringify(p||{})); }
+
 let profile = loadProfile();
-
-// Warm the UI from saved profile (keeps existing form elements/IDs)
 if (nameEl && profile.name) nameEl.value = profile.name;
-if (ageEl && profile.age)  ageEl.value  = String(profile.age);
+if (ageEl && profile.age)   ageEl.value  = String(profile.age);
 
-// ── Chat state ───────────────────────────────────────────────────────────────
-let running = false;
-let cooldown = false;
-let history = [];                 // {sender:"you"|"coach", text}
+// ── State ───────────────────────────────────────────────────────────────────
+let running   = false;
+let cooldown  = false;
+let history   = [];               // {sender:"you"|"coach", text}
 let lastCoach = "";
 let currentLang = "en-US";
 
-// Mic paths
-let recognizer = null;            // Web Speech API (preferred)
-let mediaStream = null;           // Fallback
-let recorder = null;
-let parts = [];                   // MediaRecorder chunks
-let sttActive = false;            // are we waiting for STT?
-let vadTimer = null;              // VAD poller
-let audioCtx = null;
-let analyser = null;
-let dataArray = null;
-let speechActive = false;
-let silenceMs = 0;
-let talkMs = 0;
+// Web Speech API
+let recognizer     = null;
+let srWatchdog     = null;
 
-const sleep = (ms)=>new Promise(r=>setTimeout(r, ms));
+// Fallback recorder + VAD
+let mediaStream    = null;
+let recorder       = null;
+let parts          = [];
+let sttActive      = false;
+
+let audioCtx       = null;
+let analyser       = null;
+let dataArray      = null;
+let vadRAF         = null;
+let calibrated     = false;
+let noiseFloor     = 0.008;       // updated by calibration
+let VOICE_TH       = 0.022;       // updated by calibration
+
+let talkingMs      = 0;
+let silenceMs      = 0;
+let speechActive   = false;
+
+const CONFIG = {
+  SILENCE_HOLD : 350,   // ms quiet to finalize
+  MAX_UTT      : 5000,  // ms max utterance
+  MIN_TALK     : 300,   // ignore blips shorter than this
+  TIMESLICE    : 200,   // MediaRecorder chunk ms
+  COOLDOWN_TTS : 800,   // echo guard after TTS
+};
+
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
 
+const sleep = (ms)=>new Promise(r=>setTimeout(r, ms));
+
 // ── UI helpers ───────────────────────────────────────────────────────────────
-function setStatus(s){ statusEl && (statusEl.textContent = s); }
-function setTalking(on){ avatarEl && avatarEl.classList.toggle("talking", !!on); }
+function setStatus(s){ if (statusEl) statusEl.textContent = s; }
+function setTalking(on){ if (avatarEl) avatarEl.classList.toggle("talking", !!on); }
 function escapeHtml(s){ return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 function addBubble(sender, text){
   const div = document.createElement("div");
@@ -85,31 +96,18 @@ function addBubble(sender, text){
   logEl.scrollTop = logEl.scrollHeight;
 }
 
-// ── Entity extraction (name/age) — simple, fast heuristics on-device ─────────
-const WORD2NUM = {
-  zero:0, one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9,
-  ten:10, eleven:11, twelve:12, thirteen:13, fourteen:14, fifteen:15, sixteen:16,
-  seventeen:17, eighteen:18, nineteen:19
-};
+// ── Simple name/age extraction (unchanged) ───────────────────────────────────
+const WORD2NUM = {zero:0,one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10,eleven:11,twelve:12,thirteen:13,fourteen:14,fifteen:15,sixteen:16,seventeen:17,eighteen:18,nineteen:19};
 function maybeExtractAge(text){
   if (!text) return undefined;
-  // 1) digits
   const d = text.match(/\b(\d{1,2})\b/);
-  if (d){
-    const n = Number(d[1]);
-    if (n>=3 && n<=18) return n;
-  }
-  // 2) word number like "five" or "I'm five"
+  if (d){ const n = Number(d[1]); if (n>=3 && n<=18) return n; }
   const w = text.toLowerCase().match(/\b(zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen)\b/);
-  if (w && WORD2NUM[w[1]]!=null){
-    const n = WORD2NUM[w[1]];
-    if (n>=3 && n<=18) return n;
-  }
+  if (w){ const n = WORD2NUM[w[1]]; if (n>=3 && n<=18) return n; }
   return undefined;
 }
 function maybeExtractName(text){
   if (!text) return "";
-  // Look for "my name is X" / "I'm X" / "I am X"
   const m1 = text.match(/\bmy name is\s+([A-Za-z][A-Za-z'-]{1,20})\b/i);
   if (m1) return m1[1];
   const m2 = text.match(/\b(i[' ]?m|i am)\s+([A-Za-z][A-Za-z'-]{1,20})\b/i);
@@ -120,55 +118,40 @@ function maybeUpdateProfileFromUtterance(text){
   let changed = false;
   if (!profile.name){
     const nm = maybeExtractName(text);
-    if (nm){
-      profile.name = nm;
-      if (nameEl) nameEl.value = nm;
-      changed = true;
-    }
+    if (nm){ profile.name = nm; if (nameEl) nameEl.value = nm; changed = true; }
   }
   if (!profile.age){
     const ag = maybeExtractAge(text);
-    if (ag){
-      profile.age = ag;
-      if (ageEl) ageEl.value = String(ag);
-      changed = true;
-    }
+    if (ag){ profile.age = ag; if (ageEl) ageEl.value = String(ag); changed = true; }
   }
   if (changed) saveProfile(profile);
 }
 
-// ── Backend ──────────────────────────────────────────────────────────────────
+// ── Backend calls (unchanged interface) ─────────────────────────────────────
 async function fetchJSON(url, body){
-  const res = await fetch(url, {
-    method:"POST",
-    headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify(body||{})
-  });
+  const res = await fetch(url, { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(body||{}) });
   if (!res.ok) throw new Error(`${url} ${res.status}`);
   return res.json();
 }
 async function callChat({user_text="", include_seed=false}){
-  // Sync UI form → profile before sending
   if (nameEl && nameEl.value) profile.name = nameEl.value.trim();
-  if (ageEl && ageEl.value)  profile.age  = Number(ageEl.value) || undefined;
+  if (ageEl && ageEl.value)   profile.age  = Number(ageEl.value) || undefined;
   saveProfile(profile);
 
   const payload = {
-    user_text,
-    include_seed,
-    name: nameEl?.value || "Emily",            // legacy fields (server still supports)
-    age: Number(ageEl?.value || 5),
+    user_text, include_seed,
+    name: nameEl?.value || "Emily",
+    age : Number(ageEl?.value || 5),
     mode: teenEl?.checked ? "teen" : "child",
     objective: "assessment",
     history,
     lang: currentLang,
-    client_id: CLIENT_ID,                      // NEW: tells server who we are
-    profile                                   : profile,     // NEW: local memory snapshot
+    client_id: CLIENT_ID,
+    profile
   };
   const data = await fetchJSON("/chat", payload);
-  // Accept server-updated memory (e.g., if persisted earlier)
   if (data.profile){
-    profile = { ...profile, ...data.profile };
+    profile = {...profile, ...data.profile};
     if (profile.name && nameEl) nameEl.value = profile.name;
     if (profile.age  && ageEl)  ageEl.value  = String(profile.age);
     saveProfile(profile);
@@ -180,11 +163,7 @@ async function speak(text){
   setTalking(true);
   setStatus("Speaking…");
   try{
-    const res = await fetch("/tts", {
-      method:"POST",
-      headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify({ text })
-    });
+    const res = await fetch("/tts",{ method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ text }) });
     const blob = await res.blob();
     if (blob && blob.size){
       const url = URL.createObjectURL(blob);
@@ -199,68 +178,123 @@ async function speak(text){
   }
   setTalking(false);
   setStatus("Listening…");
-  await sleep(IS_IOS ? 1400 : 900); // echo guard
+  await sleep(IS_IOS ? CONFIG.COOLDOWN_TTS+300 : CONFIG.COOLDOWN_TTS);
   cooldown = false;
 }
 
-// ── Web Speech API (preferred) ───────────────────────────────────────────────
-function stopSR(){ try{ recognizer && recognizer.stop(); }catch(_){} recognizer=null; }
+// ── Web Speech API (preferred when available) ───────────────────────────────
+function stopSR(){
+  try{ recognizer && recognizer.stop(); }catch(_){}
+  recognizer = null;
+  if (srWatchdog){ clearTimeout(srWatchdog); srWatchdog=null; }
+}
 function startSR(){
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) return false;
+
   recognizer = new SR();
   recognizer.lang = currentLang;
   recognizer.continuous = true;
-  recognizer.interimResults = false;
+  recognizer.interimResults = true;   // get early finals faster
   recognizer.maxAlternatives = 1;
 
+  const restart = ()=>{ if (running && !cooldown){ try{ recognizer.start(); }catch(_){} } };
+  const kickWatchdog = ()=>{
+    if (srWatchdog) clearTimeout(srWatchdog);
+    // If nothing heard for 20s, restart SR (Chrome sometimes stalls).
+    srWatchdog = setTimeout(()=>{ try{ recognizer.stop(); }catch(_){ } }, 20000);
+  };
+
+  recognizer.onstart = kickWatchdog;
   recognizer.onresult = async (ev)=>{
+    kickWatchdog();
     if (!running || cooldown) return;
-    const last = ev.results?.[ev.results.length-1];
-    if (!last || !last.isFinal) return;
-    const txt = (last[0]?.transcript || "").trim();
-    if (!txt) return;
-    if (lastCoach && lastCoach.toLowerCase().includes(txt.toLowerCase())) return;
+    // Use last *final* result as soon as we get it.
+    for (let i=ev.resultIndex; i<ev.results.length; i++){
+      const r = ev.results[i];
+      if (!r.isFinal) continue;
+      const txt = (r[0]?.transcript || "").trim();
+      if (!txt) continue;
+      if (lastCoach && lastCoach.toLowerCase().includes(txt.toLowerCase())) continue;
 
-    // Update profile live if we hear name/age
-    maybeUpdateProfileFromUtterance(txt);
+      maybeUpdateProfileFromUtterance(txt);
 
-    addBubble("you", txt);
-    history.push({sender:"you", text:txt});
-    const data = await callChat({user_text:txt, include_seed:false});
-    modelEl && (modelEl.textContent = `Model: ${data.model_used || data.model || "?"}`);
-    if (data.reply){
-      addBubble("coach", data.reply);
-      history.push({sender:"coach", text:data.reply});
-      lastCoach = data.reply;
-      await speak(data.reply);
+      addBubble("you", txt);
+      history.push({sender:"you", text:txt});
+      const data = await callChat({user_text:txt, include_seed:false});
+      modelEl && (modelEl.textContent = `Model: ${data.model_used || data.model || "?"}`);
+      if (data.reply){
+        addBubble("coach", data.reply);
+        history.push({sender:"coach", text:data.reply});
+        lastCoach = data.reply;
+        await speak(data.reply);
+      }
     }
   };
   recognizer.onerror = (_)=>{};
-  recognizer.onend = ()=>{ if (running && !cooldown) { try{ recognizer.start(); }catch(_){} } };
+  recognizer.onend = restart;
+
   try{ recognizer.start(); }catch(_){}
   return true;
 }
 
-// ── MediaRecorder + lightweight VAD fallback ────────────────────────────────
+// ── Fallback: MediaRecorder + calibrated VAD ────────────────────────────────
 function stopVAD(){
-  if (vadTimer){ cancelAnimationFrame(vadTimer); vadTimer=null; }
-  if (audioCtx){ try{ audioCtx.close(); }catch(_){} audioCtx=null; }
-  analyser = null; dataArray = null;
+  if (vadRAF){ cancelAnimationFrame(vadRAF); vadRAF=null; }
+  if (audioCtx){ try{ audioCtx.close(); }catch(_){ } audioCtx=null; }
+  analyser=null; dataArray=null; calibrated=false;
 }
 function stopRecorder(){
   try{ recorder && recorder.state==="recording" && recorder.stop(); }catch(_){}
-  recorder = null;
-  parts = [];
-  sttActive = false;
-  stopVAD();
+  recorder=null; parts=[]; sttActive=false; stopVAD();
 }
-
 async function ensureMic(){
   try{
-    mediaStream = await navigator.mediaDevices.getUserMedia({audio:true});
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: 1,
+        sampleRate: 48000
+      }
+    });
+    mediaStream = stream;
     return true;
   }catch(_){ return false; }
+}
+
+function rmsFrom(data){
+  let sum=0;
+  for (let i=0;i<data.length;i++){
+    const v=(data[i]-128)/128;
+    sum+=v*v;
+  }
+  return Math.sqrt(sum/data.length);
+}
+
+// Calibrate ambient noise for 600ms, set dynamic threshold
+async function calibrateNoise(){
+  calibrated=false;
+  if (!mediaStream) return;
+  audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+  const src = audioCtx.createMediaStreamSource(mediaStream);
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 2048;
+  src.connect(analyser);
+  dataArray = new Uint8Array(analyser.fftSize);
+
+  const t0 = performance.now();
+  let maxR = 0;
+  while (performance.now()-t0 < 600){
+    analyser.getByteTimeDomainData(dataArray);
+    const r = rmsFrom(dataArray);
+    if (r>maxR) maxR=r;
+    await sleep(16);
+  }
+  noiseFloor = Math.max(0.006, maxR);         // ambient ceiling
+  VOICE_TH   = Math.max(0.018, noiseFloor*2.5);
+  calibrated = true;
 }
 
 async function sendUtterance(){
@@ -269,6 +303,7 @@ async function sendUtterance(){
   try{
     const blob = new Blob(parts, { type:"audio/webm" });
     parts = [];
+    if (!blob.size){ sttActive=false; return; }
     const res = await fetch("/stt", { method:"POST", headers:{ "Content-Type":"audio/webm" }, body: blob });
     const { text } = await res.json().catch(()=>({text:""}));
     const txt = (text||"").trim();
@@ -288,95 +323,82 @@ async function sendUtterance(){
       await speak(data.reply);
     }
   }catch(_){}
-  finally{ sttActive = false; }
+  finally{ sttActive=false; }
 }
 
-function startVAD(){
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  const src = audioCtx.createMediaStreamSource(mediaStream);
-  analyser = audioCtx.createAnalyser();
-  analyser.fftSize = 2048;
-  src.connect(analyser);
-  dataArray = new Uint8Array(analyser.fftSize);
-  speechActive = false;
-  silenceMs = 0;
-  talkMs = 0;
+function startVADLoop(){
+  if (!analyser) return;
+  talkingMs=0; silenceMs=0; speechActive=false;
 
-  const SILENCE_HOLD = 600; // ms of quiet to finalize (tune 400–700)
-  const MAX_UTT = 7000;     // hard stop after 7s
-
-  let lastTs = performance.now();
-  const loop = (ts)=>{
+  const step = (ts)=>{
     if (!running || cooldown || !analyser) return;
-    const dt = ts - lastTs; lastTs = ts;
-
     analyser.getByteTimeDomainData(dataArray);
-    let sum = 0;
-    for (let i=0;i<dataArray.length;i++){
-      const v = (dataArray[i]-128)/128;
-      sum += v*v;
-    }
-    const rms = Math.sqrt(sum / dataArray.length);
+    const rms = rmsFrom(dataArray);
+    const voice = rms > VOICE_TH;
 
-    const VOICE = rms > 0.025; // threshold (tune 0.02–0.035)
-    if (VOICE){
-      talkMs += dt; silenceMs = 0; speechActive = true;
+    const now = performance.now();
+    if (voice){
+      // start of speech
+      speechActive = true;
+      talkingMs += 16;
+      silenceMs = 0;
     }else if (speechActive){
-      silenceMs += dt;
+      silenceMs += 16;
     }
 
-    if (speechActive && (silenceMs >= SILENCE_HOLD || talkMs >= MAX_UTT)){
-      try{ recorder && recorder.requestData(); }catch(_){}
-      setTimeout(()=>{ sendUtterance(); }, 60);
-      speechActive = false; silenceMs = 0; talkMs = 0;
+    // Decide end-of-utterance quickly
+    if (speechActive && (silenceMs >= CONFIG.SILENCE_HOLD || talkingMs >= CONFIG.MAX_UTT)){
+      if (talkingMs >= CONFIG.MIN_TALK){
+        try{ recorder && recorder.requestData(); }catch(_){}
+        setTimeout(()=>sendUtterance(), 40);
+      }
+      speechActive=false; talkingMs=0; silenceMs=0;
     }
-    vadTimer = requestAnimationFrame(loop);
+    vadRAF = requestAnimationFrame(step);
   };
-  vadTimer = requestAnimationFrame(loop);
+  vadRAF = requestAnimationFrame(step);
 }
 
 function startRecorder(){
   const MR = window.MediaRecorder;
-  if (!MR) return false;
-  recorder = new MR(mediaStream, { mimeType:"audio/webm" });
+  if (!MR || !mediaStream) return false;
 
-  recorder.ondataavailable = (ev)=>{
-    if (ev.data && ev.data.size){ parts.push(ev.data); }
-  };
+  recorder = new MR(mediaStream, { mimeType:"audio/webm;codecs=opus", audioBitsPerSecond: 128000 });
+  recorder.ondataavailable = (ev)=>{ if (ev.data && ev.data.size) parts.push(ev.data); };
   recorder.onerror = ()=>{};
-  try{ recorder.start(); }catch(_){ return false; }
+  try{ recorder.start(CONFIG.TIMESLICE); }catch(_){ return false; }
 
-  startVAD();
+  startVADLoop();
   return true;
 }
 
-// ── Flow ────────────────────────────────────────────────────────────────────
+// ── Main flow ────────────────────────────────────────────────────────────────
 async function startFlow(){
   if (running) return;
   running = true;
-  startBtn && (startBtn.disabled = true);
-  stopBtn  && (stopBtn.disabled  = false);
-  currentLang = langEl?.value || "en-US";
+  if (startBtn) startBtn.disabled = true;
+  if (stopBtn)  stopBtn.disabled  = false;
 
+  currentLang = langEl?.value || "en-US";
   setStatus("Starting…");
   addBubble("you","(Starting)");
 
   try{
     const seed = await callChat({ include_seed:true });
-    modelEl && (modelEl.textContent = `Model: ${seed.model_used || seed.model || "?"}`);
+    if (modelEl) modelEl.textContent = `Model: ${seed.model_used || seed.model || "?"}`;
     if (seed.reply){
       addBubble("coach", seed.reply);
       history.push({sender:"coach", text:seed.reply});
       lastCoach = seed.reply;
       await speak(seed.reply);
     }
-  }catch(_e){
+  }catch(_){
     addBubble("coach","I had trouble starting. Try again?");
     stopFlow();
     return;
   }
 
-  // Prefer Web Speech API (desktop/laptops)
+  // Prefer Web Speech API first for lowest overhead
   const srOK = startSR();
   if (!srOK){
     const ok = await ensureMic();
@@ -385,8 +407,11 @@ async function startFlow(){
       setStatus("Idle");
       return;
     }
+    // Calibrate room noise once and kick off VAD
+    await calibrateNoise();
     startRecorder();
   }
+
   setStatus("Listening… (say something)");
 }
 
@@ -394,13 +419,13 @@ function stopFlow(){
   running = false;
   stopSR();
   stopRecorder();
-  startBtn && (startBtn.disabled = false);
-  stopBtn  && (stopBtn.disabled  = true);
+  if (startBtn) startBtn.disabled = false;
+  if (stopBtn)  stopBtn.disabled  = true;
   setStatus("Stopped");
 }
 
-// ── Send (text box) ─────────────────────────────────────────────────────────
-sendBtn && sendBtn.addEventListener("click", async ()=>{
+// ── Text send (unchanged) ───────────────────────────────────────────────────
+sendBtn?.addEventListener("click", async ()=>{
   const msg = (textEl?.value || "").trim();
   if (!msg) return;
   textEl.value = "";
@@ -410,7 +435,7 @@ sendBtn && sendBtn.addEventListener("click", async ()=>{
   addBubble("you", msg);
   history.push({sender:"you", text:msg});
   const data = await callChat({user_text:msg, include_seed:false});
-  modelEl && (modelEl.textContent = `Model: ${data.model_used || data.model || "?"}`);
+  if (modelEl) modelEl.textContent = `Model: ${data.model_used || data.model || "?"}`;
   if (data.reply){
     addBubble("coach", data.reply);
     history.push({sender:"coach", text:data.reply});
@@ -418,11 +443,11 @@ sendBtn && sendBtn.addEventListener("click", async ()=>{
     await speak(data.reply);
   }
 });
-textEl && textEl.addEventListener("keydown",(e)=>{ if (e.key==="Enter") sendBtn.click(); });
+textEl?.addEventListener("keydown",(e)=>{ if (e.key==="Enter") sendBtn.click(); });
 
-// ── Start/Stop buttons ───────────────────────────────────────────────────────
-startBtn && startBtn.addEventListener("click", startFlow);
-stopBtn  && stopBtn.addEventListener("click", stopFlow);
+// ── Buttons ─────────────────────────────────────────────────────────────────
+startBtn?.addEventListener("click", startFlow);
+stopBtn ?.addEventListener("click", stopFlow);
 
 // ── Init ────────────────────────────────────────────────────────────────────
 setStatus("Idle");
