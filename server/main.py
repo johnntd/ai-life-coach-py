@@ -1,5 +1,5 @@
 # server/main.py
-# Full file — preserves all working endpoints/IDs/logic and adds robust template path + TTS fix.
+# Keeps all existing endpoints & behavior. Adds strict single-language output and robust TTS.
 import os
 import io
 import re
@@ -8,34 +8,33 @@ import logging
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, Request, Response, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, PlainTextResponse
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from openai import AsyncOpenAI, OpenAI
 
-# -----------------------------
-# Paths & static/templates
-# -----------------------------
+# ---------- Paths ----------
 BASE_DIR = Path(__file__).resolve().parents[1]
 
-# Support either "template" or "templates" without forcing a rename.
-CANDIDATES = [BASE_DIR / "template" / "index.html", BASE_DIR / "templates" / "index.html"]
+# Serve your existing template without moving anything
+CANDIDATES = [
+    BASE_DIR / "template" / "index.html",
+    BASE_DIR / "templates" / "index.html",
+    BASE_DIR / "index.html",
+]
 for p in CANDIDATES:
     if p.exists():
         INDEX_HTML = p
         break
 else:
-    # Last resort: a root index.html if a user drops it there.
-    INDEX_HTML = BASE_DIR / "index.html"
+    INDEX_HTML = CANDIDATES[-1]  # final fallback (may not exist)
 
 STATIC_DIR = BASE_DIR / "static"
 
-# -----------------------------
-# App setup
-# -----------------------------
+# ---------- App ----------
 log = logging.getLogger("server")
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 
@@ -49,22 +48,19 @@ app.add_middleware(
 )
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-# -----------------------------
-# Models & clients
-# -----------------------------
-PRIMARY_MODEL = os.getenv("PRIMARY_MODEL", "gpt-5-2025-08-07")  # your preferred primary
+# ---------- OpenAI Clients ----------
+aclient = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))  # async for chat
+sclient = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))       # sync for TTS/STT helpers
+
+PRIMARY_MODEL  = os.getenv("PRIMARY_MODEL",  "gpt-5-2025-08-07")
 FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "gpt-4o")
+TTS_MODEL      = os.getenv("TTS_MODEL",      "gpt-4o-mini-tts")
+TTS_VOICE      = os.getenv("TTS_VOICE",      "alloy")
+STT_MODEL      = os.getenv("STT_MODEL",      "gpt-4o-transcribe")  # or "whisper-1"
 
-# Async client for chat calls
-aclient = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-# Sync client for blocking helpers (e.g., TTS/STT done in a thread inside our async handlers)
-sclient = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-# -----------------------------
-# Data models (preserve fields your JS sends)
-# -----------------------------
+# ---------- Models ----------
 class HistoryItem(BaseModel):
-    sender: str  # "you" | "coach"
+    sender: str
     text: str
 
 class ChatIn(BaseModel):
@@ -72,42 +68,52 @@ class ChatIn(BaseModel):
     include_seed: bool = False
     name: str = "Emily"
     age: int = 5
-    mode: str = "child"      # "teen" or "child"
+    mode: str = "child"        # "teen" | "child"
     objective: str = "gentle warm-up"
     history: Optional[List[HistoryItem]] = None
+    lang: str = "en-US"        # from the dropdown (kept for compatibility)
 
 class TTSIn(BaseModel):
     text: str
-    voice: Optional[str] = None  # keep for compatibility
-    model: Optional[str] = None  # ignored; we use a TTS-capable model internally
+    voice: Optional[str] = None
+    model: Optional[str] = None  # ignored but preserved for compatibility
 
-# -----------------------------
-# Helpers
-# -----------------------------
+# ---------- Helpers ----------
 def strip_cues(text: str) -> str:
-    """Remove [[CUE_*]] tags; keep everything else."""
+    """Remove [[CUE_*]] tokens if any slipped through."""
     return re.sub(r"\[\[.*?\]\]", "", text or "").strip()
 
+def lang_name(lang_code: str) -> str:
+    """Map locale to friendly language name for instructions."""
+    lc = (lang_code or "").lower()
+    if lc.startswith("vi"):
+        return "Vietnamese"
+    if lc.startswith("en"):
+        return "English"
+    # default to English if unknown
+    return "English"
+
 def build_messages(payload: ChatIn) -> List[dict]:
-    """Compose system + history + user message. Keep behavior you already had."""
-    role = "Teen Coaching" if payload.mode == "teen" else "Child Coaching"
+    """Compose system + history + user. Single-language rule enforced here."""
+    learner_lang = lang_name(payload.lang)
+    session_role = "Teen Coaching" if payload.mode == "teen" else "Child Coaching"
+
     system = (
-        "You are Miss Sunny, a warm, patient, bilingual (English ↔ Vietnamese) AI life coach and language teacher. "
-        "You keep turns short and interactive. Follow the session mode, adapt to age/personality, and end with exactly one question. "
-        "Never include bracketed cue tags like [[CUE_*]] in your text output."
+        "You are Miss Sunny, a warm, patient children’s coach.\n"
+        f"- Session Mode: {session_role}. Learner age: {payload.age}. Objective: {payload.objective}.\n"
+        f"- Speak ONLY in {learner_lang}. Do NOT translate or repeat in any other language.\n"
+        "- Keep turns short, friendly, and end with exactly one question.\n"
+        "- No bracketed cues like [[CUE_SMILE]]."
     )
-    # Seed opening used when include_seed=True
+
     seed = (
         f"Hi {payload.name}! How are you feeling—happy, okay, or not great? "
-        f"Let’s do something fun! What’s something you like to do?"
+        "Let’s play a tiny game: tell me one fun thing you like to do!"
     )
 
-    msgs = [
-        {"role": "system", "content": system},
-        {"role": "system", "content": f"Session Mode: {role}. Learner age: {payload.age}. Objective: {payload.objective}."},
-    ]
+    msgs: List[dict] = [{"role": "system", "content": system}]
 
-    # Rebuild short history into assistant/user turns
+    # Replay short history (preserves your format)
     if payload.history:
         for h in payload.history:
             if not h.text:
@@ -115,16 +121,15 @@ def build_messages(payload: ChatIn) -> List[dict]:
             role = "user" if h.sender == "you" else "assistant"
             msgs.append({"role": role, "content": strip_cues(h.text)})
 
+    # First turn seed vs normal user text
     if payload.include_seed and not payload.user_text:
         msgs.append({"role": "assistant", "content": seed})
     else:
         msgs.append({"role": "user", "content": payload.user_text or ""})
-
     return msgs
 
 async def call_chat(messages: List[dict]) -> dict:
-    """Try primary model; gracefully fall back to gpt-4o. Avoid params newer models reject."""
-    # Keep payload minimal to avoid 'unsupported' errors on evolving models.
+    """Primary + fallback; keep params minimal for newest models."""
     try:
         log.info("[router] calling model=%s", PRIMARY_MODEL)
         r = await aclient.chat.completions.create(model=PRIMARY_MODEL, messages=messages)
@@ -139,65 +144,47 @@ async def call_chat(messages: List[dict]) -> dict:
         txt = (r.choices[0].message.content or "").strip()
         return {"model_used": FALLBACK_MODEL, "reply": strip_cues(txt)}
 
-def tts_blocking(text: str, voice: Optional[str]) -> bytes:
-    """
-    Use current OpenAI SDK TTS without the old 'format' arg (which now errors).
-    We request a default audio format the SDK returns (often WAV/MP3) and
-    feed it back to the browser. Your JS just plays whatever Blob it receives.
-    """
-    # A TTS-capable model; adjust if you use a different one in your account.
-    tts_model = os.getenv("TTS_MODEL", "gpt-4o-mini-tts")
-    sel_voice = voice or os.getenv("TTS_VOICE", "alloy")
+def tts_bytes(text: str, voice: Optional[str]) -> bytes:
+    """Current OpenAI SDK TTS: no 'format' arg; return raw bytes for the browser <audio>."""
     try:
-        # Non-streaming call; returns an object with bytes.
-        r = sclient.audio.speech.create(model=tts_model, voice=sel_voice, input=text)
-        # The SDK exposes different helpers across versions; try a few:
-        audio_bytes = None
-        for attr in ("to_bytes", "read", "bytes", "content"):
-            if hasattr(r, attr):
-                val = getattr(r, attr)
-                audio_bytes = val() if callable(val) else val
-                break
-        if not audio_bytes:
-            # Fallback: some versions have .stream for chunks
-            if hasattr(r, "stream"):
-                b = io.BytesIO()
-                for chunk in r.stream:
-                    b.write(chunk)
-                audio_bytes = b.getvalue()
-        return audio_bytes or b""
+        res = sclient.audio.speech.create(model=TTS_MODEL, voice=voice or TTS_VOICE, input=text)
+        # Most recent SDKs expose .read() to get bytes:
+        if hasattr(res, "read"):
+            return res.read() or b""
+        # Fallbacks for older shapes:
+        for attr in ("to_bytes", "bytes", "content"):
+            if hasattr(res, attr):
+                val = getattr(res, attr)
+                return val() if callable(val) else (val or b"")
+        # Last resort: stream chunks
+        if hasattr(res, "stream"):
+            buf = io.BytesIO()
+            for chunk in res.stream:
+                buf.write(chunk)
+            return buf.getvalue()
     except Exception as e:
-        log.error("TTS failed: %s", repr(e))
-        return b""
+        log.error("TTS failed: %r", e)
+    return b""
 
-def stt_blocking(raw_bytes: bytes) -> str:
-    """
-    Server STT for MediaRecorder/webm chunks. Keep for desktop Chrome path.
-    If iOS blocks mic on HTTP, your frontend falls back to browser SR.
-    """
+def stt_text(raw: bytes) -> str:
+    """Server STT for webm chunks (Chrome desktop path)."""
     try:
-        model = os.getenv("STT_MODEL", "gpt-4o-transcribe")
-        # Provide a filename & mimetype so the API can infer decoder
-        file_tuple = ("speech.webm", io.BytesIO(raw_bytes), "audio/webm")
-        tr = sclient.audio.transcriptions.create(model=model, file=file_tuple)
+        file_tuple = ("speech.webm", io.BytesIO(raw), "audio/webm")
+        tr = sclient.audio.transcriptions.create(model=STT_MODEL, file=file_tuple)
         text = getattr(tr, "text", None) or (tr.__dict__.get("text") if hasattr(tr, "__dict__") else "")
         return (text or "").strip()
     except Exception as e:
-        log.error("STT failed: %s", repr(e))
+        log.error("STT failed: %r", e)
         return ""
 
-# -----------------------------
-# Routes
-# -----------------------------
+# ---------- Routes ----------
 @app.get("/")
 async def index():
     if not INDEX_HTML.exists():
-        # Clear, friendly error for the exact path being used.
         return PlainTextResponse(
-            f"index.html not found. Looked in:\n- {CANDIDATES[0]}\n- {CANDIDATES[1]}\n- {BASE_DIR/'index.html'}\n",
+            "index.html not found.\nLooked in:\n- template/index.html\n- templates/index.html\n- ./index.html\n",
             status_code=500,
         )
-    # Serve the existing file under template/ or templates/
     return FileResponse(str(INDEX_HTML))
 
 @app.post("/chat")
@@ -208,26 +195,17 @@ async def chat(payload: ChatIn):
 
 @app.post("/tts")
 async def tts(body: TTSIn):
-    audio = await app.state.anyio.to_thread.run_sync(tts_blocking, body.text, body.voice) if hasattr(app.state, "anyio") \
-        else tts_blocking(body.text, body.voice)
-    if not audio:
-        # Return 200 with empty audio is what your JS currently handles as
-        # “Sorry, my audio didn’t load—let’s keep chatting!”
-        return Response(content=b"", media_type="application/octet-stream")
-    # Don’t hardcode type; generic is fine because the <audio> element will sniff.
+    audio = tts_bytes(body.text, body.voice)
+    # We intentionally return application/octet-stream so your existing <audio> plays it
     return Response(content=audio, media_type="application/octet-stream")
 
 @app.post("/stt")
 async def stt(request: Request):
-    # Accept raw bytes (MediaRecorder webm).
     raw = await request.body()
-    text = await app.state.anyio.to_thread.run_sync(stt_blocking, raw) if hasattr(app.state, "anyio") \
-        else stt_blocking(raw)
+    text = stt_text(raw)
     return JSONResponse({"text": text})
 
-# -----------------------------
-# Uvicorn entry (optional)
-# -----------------------------
+# ---------- Dev entry ----------
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("server.main:app", host="127.0.0.1", port=8000, reload=True)
