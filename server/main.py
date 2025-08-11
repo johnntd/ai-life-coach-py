@@ -1,10 +1,9 @@
-import os
-import logging
-from typing import List, Optional, Literal
+import os, io, logging
+from typing import List, Literal, Optional, Dict, Any
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -22,10 +21,11 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("server.main")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-PRIMARY_MODEL = os.getenv("PRIMARY_MODEL", "gpt-5")
-FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "gpt-4o")
-TTS_MODEL = os.getenv("TTS_MODEL", "gpt-4o-mini-tts")
-TTS_VOICE = os.getenv("TTS_VOICE", "alloy")
+PRIMARY_MODEL   = os.getenv("PRIMARY_MODEL", "gpt-4o")
+FALLBACK_MODEL  = os.getenv("FALLBACK_MODEL", "gpt-4o")
+TTS_MODEL       = os.getenv("TTS_MODEL", "gpt-4o-mini-tts")
+TTS_VOICE       = os.getenv("TTS_VOICE", "alloy")
+TRANSCRIBE_MODEL= os.getenv("TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe")
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*")
 
 if not OPENAI_API_KEY:
@@ -33,14 +33,7 @@ if not OPENAI_API_KEY:
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# Use short replies to keep TTS fast
-MAX_COMPLETION_TOKENS = 140  # ~ ≤35 words target
-
-# ------------------------------------------------------------------------------
-# App & Static
-# ------------------------------------------------------------------------------
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in ALLOWED_ORIGINS.split(",")] if ALLOWED_ORIGINS else ["*"],
@@ -49,180 +42,136 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-templates_dir = os.path.join(BASE_DIR, "templates")
-static_dir = os.path.join(BASE_DIR, "static")
-
+# Static + templating
+app.mount("/static", StaticFiles(directory="static"), name="static")
 env = Environment(
-    loader=FileSystemLoader(templates_dir),
+    loader=FileSystemLoader("templates"),
     autoescape=select_autoescape(["html", "xml"])
 )
 
-app.mount("/static", StaticFiles(directory=static_dir), name="static")
-
 # ------------------------------------------------------------------------------
-# Models
+# Prompt builder (kept simple and stable)
 # ------------------------------------------------------------------------------
-class HistoryItem(BaseModel):
-    sender: Literal["you", "coach"]
-    text: str
-
 class ChatRequest(BaseModel):
     user_text: str = ""
-    name: str = "Friend"
+    name: str = "Emily"
     age: int = 5
-    mode: Literal["child", "teen", "adult"] = "child"
-    lang: Literal["en-US", "vi-VN"] = "en-US"
+    mode: Literal["child","teen","adult"] = "child"
+    objective: str = "gentle morning warm-up"
     include_seed: bool = False
-    history: List[HistoryItem] = Field(default_factory=list)
+    lang: str = "en-US"
+    history: Optional[List[Dict[str, Any]]] = None
 
-class ChatResponse(BaseModel):
-    reply: str
-    model_used: str
-    meta: Optional[dict] = None
-
-class TTSRequest(BaseModel):
-    text: str
-
-# ------------------------------------------------------------------------------
-# Prompt shaping (aligned to your Master Prompt)
-# ------------------------------------------------------------------------------
-CORE_SYSTEM = (
-    "You are Miss Sunny, a warm, patient, bilingual (English↔Vietnamese) AI life coach and language teacher. "
-    "You interact via a life-like avatar. Keep turns short, lively, interactive, and child-safe. "
-    "Once teaching, be in Study Mode."
+MASTER_PROMPT = (
+    "You are Miss Sunny, a warm, patient, bilingual (English ↔ Vietnamese) AI life "
+    "coach and language teacher. Keep turns short, lively, and interactive. "
+    "Use Study Mode. Follow session mode limits. "
+    "Child/Teen: ≤35 words, Adult: ≤60 words. End with exactly one question. "
+    "For bilingual support: If primary language is English and learning Vietnamese, "
+    "speak mainly Vietnamese with brief English hints; the reverse if Vietnamese is primary. "
+    "Use short bilingual word pairs when introducing new words. Include one optional [[CUE_*]] tag at end."
 )
 
-ENGAGEMENT_RULES = (
-    "For child/teen: ≤35 words per turn. For adult: ≤60 words. "
-    "Always end with exactly one simple question. "
-    "Use playful tone for kids; respectful, clear tone for adults."
-)
-
-BILINGUAL_RULES = (
-    "If learner’s primary language is English and they are learning Vietnamese: mainly Vietnamese with brief English clarifications and bilingual pairs. "
-    "If learner’s primary language is Vietnamese and learning English: mainly English with brief Vietnamese clarifications and bilingual pairs. "
-    "Gradually increase target language usage as skill improves."
-)
-
-TURN_RECIPE = (
-    "Each turn: 1) Acknowledge last input. 2) One tiny teaching point. "
-    "3) Invite an action/response. 4) End with exactly one question. "
-    "Include optional one avatar cue tag at end like [[CUE_SMILE]] "
-    "Do not include lists or markdown."
-)
-
-SAFETY = (
-    "Never ask for personal info beyond name and age for personalization. "
-    "If user mentions harm or unsafe: respond with empathy, say you will get someone to help, and output [[ESCALATE_GROWNUP]] on a new line."
-)
-
-def mode_limits(mode: str) -> str:
-    if mode in ("child", "teen"):
-        return "Keep it ≤35 words. Exactly one question."
-    return "Keep it ≤60 words. Exactly one question."
-
-def seed_opening(name: str, mode: str, lang: str) -> str:
-    # Short warm start that the frontend also speaks once
-    if mode in ("child", "teen"):
-        return f"Hi {name}! How are you feeling—happy, okay, or not great?"
-    return f"Hello {name}. How are you feeling today?"
-
-def build_messages(req: ChatRequest) -> List[dict]:
-    system_pack = [
-        {"role": "system", "content": CORE_SYSTEM},
-        {"role": "system", "content": ENGAGEMENT_RULES},
-        {"role": "system", "content": BILINGUAL_RULES},
-        {"role": "system", "content": TURN_RECIPE},
-        {"role": "system", "content": SAFETY},
-        {"role": "system", "content":
-            f"Mode: {req.mode}. Learner age: {req.age}. UI language: {req.lang}. "
-            f"{mode_limits(req.mode)}"}
+def seed_turn(name:str, age:int, mode:str, lang:str) -> List[Dict[str,str]]:
+    greeting = (
+        "Hi there! 😊 Do you know how to say “hello” in Vietnamese? Try: “xin chào”! "
+        "Can you say it with me? What should we learn next? [[CUE_WAVE]]"
+        if lang.startswith("vi") else
+        "Hello, friend! 😊 How are you feeling—happy, okay, or not great? "
+        "What’s one thing you like to do? [[CUE_WAVE]]"
+    )
+    return [
+        {"role":"system","content":MASTER_PROMPT},
+        {"role":"user","content":f"My name is {name}, I am {age} years old. Mode: {mode}. Let's start."},
+        {"role":"assistant","content":greeting}
     ]
 
-    msgs: List[dict] = []
-    msgs.extend(system_pack)
-
-    # roll short chat history
-    for m in req.history[-12:]:
-        role = "assistant" if m.sender == "coach" else "user"
-        msgs.append({"role": role, "content": m.text})
-
-    # include seed hint once if requested
-    if req.include_seed:
-        msgs.append({
-            "role": "developer",
-            "content": "Start with a warm greeting using the learner’s name, then one tiny challenge appropriate to age. Keep it short and end with one question."
-        })
-        msgs.append({"role": "user", "content": seed_opening(req.name, req.mode, req.lang)})
-
-    # user turn (can be empty on seed)
-    if req.user_text:
-        msgs.append({"role": "user", "content": req.user_text})
-
-    return msgs
+def turn_messages(name:str, age:int, mode:str, user_text:str) -> List[Dict[str,str]]:
+    return [
+        {"role":"system","content":MASTER_PROMPT},
+        {"role":"user","content":f"({name}, {age}, mode={mode}) {user_text}"}
+    ]
 
 # ------------------------------------------------------------------------------
 # Routes
 # ------------------------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
-async def home(_: Request):
+def index():
     tpl = env.get_template("index.html")
     return tpl.render()
 
-@app.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest):
-    # Build messages
-    messages = build_messages(req)
-
-    # Primary → Fallback
-    model_used = PRIMARY_MODEL
+@app.post("/chat")
+def chat(req: ChatRequest):
     try:
-        log.info("[router] calling model=%s", PRIMARY_MODEL)
-        r = client.chat.completions.create(
-            model=PRIMARY_MODEL,
-            messages=messages,
-            max_completion_tokens=MAX_COMPLETION_TOKENS,
-        )
-        reply = (r.choices[0].message.content or "").strip()
-        if not reply:
-            raise RuntimeError("Empty reply from primary")
+        # choose model (PRIMARY_MODEL already changed in .env step)
+        model_try = [PRIMARY_MODEL] + ([FALLBACK_MODEL] if FALLBACK_MODEL and FALLBACK_MODEL != PRIMARY_MODEL else [])
+
+        messages = seed_turn(req.name, req.age, req.mode, req.lang) if req.include_seed \
+            else turn_messages(req.name, req.age, req.mode, req.user_text or "")
+
+        last_err = None
+        for m in model_try:
+            log.info("[router] calling model=%s", m)
+            try:
+                # chat.completions for wide compatibility
+                res = client.chat.completions.create(
+                    model=m,
+                    messages=messages,
+                    max_tokens=220
+                )
+                reply = (res.choices[0].message.content or "").strip()
+                if reply:
+                    return JSONResponse({"reply": reply, "model": m})
+                raise RuntimeError("Empty reply")
+            except Exception as e:
+                last_err = e
+                log.error("[router] model %s failed: %s", m, e)
+                continue
+        raise HTTPException(status_code=500, detail=f"Chat failed: {last_err}")
+    except HTTPException:
+        raise
     except Exception as e:
-        log.info("[router] primary failed: %s", e)
-        model_used = FALLBACK_MODEL
-        r = client.chat.completions.create(
-            model=FALLBACK_MODEL,
-            messages=messages,
-            max_tokens=MAX_COMPLETION_TOKENS,
-        )
-        reply = (r.choices[0].message.content or "").strip()
-
-    # Hard guard: keep it tiny so TTS is snappy
-    if req.mode in ("child", "teen") and len(reply.split()) > 40:
-        reply = "Let’s keep it short. How are you feeling—happy, okay, or not great?"
-
-    return JSONResponse(ChatResponse(reply=reply, model_used=model_used, meta=None).model_dump())
+        log.exception("Chat failed")
+        raise HTTPException(status_code=500, detail="Chat failed")
 
 @app.post("/tts")
-async def tts(body: TTSRequest):
-    text = (body.text or "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail="Missing text")
-
+def tts(payload: Dict[str, Any]):
     try:
-        # Non‑streaming: lowest error rate with our frontend; still quick for short lines
-        # In v1+ this returns a binary body; we can read .content directly.
-        res = client.audio.speech.create(
+        text = (payload or {}).get("text","").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="Missing text")
+        voice = (payload or {}).get("voice") or TTS_VOICE
+        # streaming to memory buffer for minimal overhead
+        with client.audio.speech.with_streaming_response.create(
             model=TTS_MODEL,
-            voice=TTS_VOICE,
+            voice=voice,
             input=text,
-            response_format="mp3",
-        )
-        return Response(content=res.content, media_type="audio/mpeg")
+            format="mp3"
+        ) as resp:
+            return StreamingResponse(resp.iter_bytes(), media_type="audio/mpeg")
     except Exception as e:
-        log.exception("TTS failed: %s", e)
+        log.exception("TTS failed")
         raise HTTPException(status_code=500, detail="TTS failed")
 
-@app.get("/health")
-async def health():
-    return {"ok": True}
+# --- NEW: robust server STT using gpt‑4o‑mini‑transcribe ---
+@app.post("/stt")
+async def stt(request: Request):
+    try:
+        data = await request.body()
+        if not data:
+            raise HTTPException(status_code=400, detail="Empty audio")
+        # data is audio/webm (Opus). Hand to OpenAI as a file-like.
+        bio = io.BytesIO(data)
+        bio.name = "clip.webm"  # filename hint
+        tr = client.audio.transcriptions.create(
+            model=TRANSCRIBE_MODEL,
+            file=bio,
+            response_format="json"
+        )
+        text = (tr.text or "").strip()
+        return JSONResponse({"text": text})
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("STT failed")
+        raise HTTPException(status_code=500, detail="STT failed")
