@@ -1,11 +1,13 @@
 # server/main.py
 # ─────────────────────────────────────────────────────────────────────────────
-# Preserves all previous features + routes. Focus here is correctness/compat:
-# - Deterministic intro (name → age → assessment)
-# - Single language
-# - Memory across sessions in ./data/memory.json
-# - Clean TTS/STT calls compatible with current OpenAI SDK
-# - Strip [[CUE_*]] tokens
+# Full FastAPI server preserving prior routes and behavior, with:
+# • Deterministic intro flow (name → age → assessment), single language.
+# • Memory persisted under ./data/memory.json (keyed by client_id).
+# • TTS/STT wired to OpenAI SDK (compatible calls).
+# • [[CUE_*]] removal.
+# • Short-turn constraint + token caps to keep replies brief.
+# • Optional faster model only for the very first seed turn (not used if
+#   frontend does instant greeting; kept for compatibility).
 # ─────────────────────────────────────────────────────────────────────────────
 
 import os
@@ -29,7 +31,7 @@ BASE_DIR   = Path(__file__).resolve().parents[1]
 STATIC_DIR = BASE_DIR / "static"
 
 CANDIDATES = [
-    BASE_DIR / "template" / "index.html",   # your original location
+    BASE_DIR / "template" / "index.html",   # original location
     BASE_DIR / "templates" / "index.html",
     BASE_DIR / "index.html",
 ]
@@ -52,19 +54,21 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"]
+    allow_methods=["*"], allow_headers=["*"],
 )
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # ---------- OpenAI ----------
-aclient = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))  # async (chat)
-sclient = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))       # sync (tts, stt)
+aclient = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))  # async chat
+sclient = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))       # sync stt/tts
 
-PRIMARY_MODEL  = os.getenv("PRIMARY_MODEL",  "gpt-5-2025-08-07")
-FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "gpt-4o")
-TTS_MODEL      = os.getenv("TTS_MODEL",      "gpt-4o-mini-tts")
-TTS_VOICE      = os.getenv("TTS_VOICE",      "alloy")
-STT_MODEL      = os.getenv("STT_MODEL",      "gpt-4o-transcribe")  # or "whisper-1"
+PRIMARY_MODEL   = os.getenv("PRIMARY_MODEL",  "gpt-5-2025-08-07")
+FALLBACK_MODEL  = os.getenv("FALLBACK_MODEL", "gpt-4o")
+FAST_SEED_MODEL = os.getenv("FAST_SEED_MODEL","gpt-4o-mini")  # for *seed only*
+
+TTS_MODEL  = os.getenv("TTS_MODEL", "gpt-4o-mini-tts")
+TTS_VOICE  = os.getenv("TTS_VOICE", "alloy")
+STT_MODEL  = os.getenv("STT_MODEL", "gpt-4o-transcribe")  # or whisper-1
 
 # ---------- Models ----------
 class HistoryItem(BaseModel):
@@ -131,9 +135,7 @@ def strip_cues(text: str) -> str:
     return re.sub(r"\[\[.*?\]\]", "", text or "").strip()
 
 def lang_name(lang_code: str) -> str:
-    lc = (lang_code or "").lower()
-    if lc.startswith("en"): return "English"
-    if lc.startswith("vi"): return "English"  # force single language
+    # Force English output to avoid mixed-language replies
     return "English"
 
 def build_messages(payload: ChatIn, server_profile: Profile) -> List[dict]:
@@ -147,55 +149,89 @@ def build_messages(payload: ChatIn, server_profile: Profile) -> List[dict]:
     memory_line = f"Known child facts → Name: {child_name or 'Unknown'}, Age: {child_age or 'Unknown'}."
     if notes: memory_line += f" Extra notes: {notes}"
 
+    # Tight brevity constraints for every turn
+    brevity = (
+        "Reply in at most TWO short sentences (≤ 25 words total). "
+        "Ask EXACTLY one concise question. Avoid emojis and fillers."
+    )
+
     system = (
         "You are Miss Sunny, a warm, patient children’s coach.\n"
         f"- Session Mode: {session_role}. Objective: {payload.objective}. Respond ONLY in {learner_lang}.\n"
-        "- START OF EVERY NEW SESSION (strict):\n"
-        "  1) Greet and ask the child's NAME only.\n"
-        "  2) After they say their name, ask their AGE only.\n"
-        "  3) After age is known, begin the assessment.\n"
-        "- If name/age already known from memory, briefly confirm and begin.\n"
-        "- Keep turns short and end with exactly one question. No [[CUE_*]] tokens.\n"
+        "- Start-of-session policy:\n"
+        "  (1) If name unknown → greet and ask their name only.\n"
+        "  (2) If name known but age unknown → ask their age only.\n"
+        "  (3) If both known → begin the assessment.\n"
         "- Assessment order: Reading/Writing → Math → Logic → Science → Social skills → General knowledge.\n"
-        "  Ask 1–2 items per section; after each, one-sentence feedback + one tip.\n"
+        "  Ask 1–2 items per section; after each, one-sentence feedback + one tip, then continue.\n"
+        f"- {brevity}\n"
         f"- Memory: {memory_line}\n"
     )
 
-    msgs: List[dict] = [{"role":"system","content":system}]
+    msgs: List[dict] = [{"role": "system", "content": system}]
 
     if payload.history:
         for h in payload.history:
-            if not h.text: continue
+            if not h.text:
+                continue
             role = "user" if h.sender == "you" else "assistant"
-            msgs.append({"role":role, "content":strip_cues(h.text)})
+            msgs.append({"role": role, "content": strip_cues(h.text)})
 
     if payload.include_seed and not payload.user_text:
-        seed = f"Hi {child_name}! How old are you?" if child_name else "Hi! I’m Miss Sunny. What’s your name?"
-        msgs.append({"role":"assistant","content":seed})
+        # Server-side seed kept for compatibility, but the frontend now speaks
+        # an instant local greeting, so this path will normally not be used.
+        seed = "Hi! What’s your name?"
+        if child_name and not child_age:
+            seed = f"Hi {child_name}! How old are you?"
+        elif child_name and child_age:
+            seed = f"Great to see you, {child_name}! Ready to start your assessment?"
+        msgs.append({"role": "assistant", "content": seed})
     else:
-        msgs.append({"role":"user","content":payload.user_text or ""})
+        msgs.append({"role": "user", "content": payload.user_text or ""})
 
     return msgs
 
-async def call_chat(messages: List[dict]) -> dict:
+def _cap_kwargs_for_model(model: str) -> dict:
+    """
+    Ensure short replies regardless of model family.
+    GPT-5 family expects `max_completion_tokens`; GPT-4o expects `max_tokens`.
+    """
+    if model.startswith("gpt-5"):
+        return {"max_completion_tokens": 96}  # ~ very short
+    # otherwise fall back to classic param
+    return {"max_tokens": 96}
+
+async def call_chat(messages: List[dict], *, prefer_fast: bool = False) -> dict:
+    model_choice = FAST_SEED_MODEL if prefer_fast else PRIMARY_MODEL
     try:
-        log.info("[router] calling model=%s", PRIMARY_MODEL)
-        r = await aclient.chat.completions.create(model=PRIMARY_MODEL, messages=messages)
+        log.info("[router] calling model=%s", model_choice)
+        r = await aclient.chat.completions.create(
+            model=model_choice,
+            messages=messages,
+            **_cap_kwargs_for_model(model_choice),
+        )
         txt = (r.choices[0].message.content or "").strip()
-        if not txt: raise RuntimeError("Empty reply from primary")
-        return {"model_used": PRIMARY_MODEL, "reply": strip_cues(txt)}
+        if not txt:
+            raise RuntimeError("Empty reply from primary")
+        return {"model_used": model_choice, "reply": strip_cues(txt)}
     except Exception as e:
         log.info("[router] Primary failed: %s", getattr(e, "message", str(e)))
         log.info("[router] calling model=%s", FALLBACK_MODEL)
-        r = await aclient.chat.completions.create(model=FALLBACK_MODEL, messages=messages)
+        r = await aclient.chat.completions.create(
+            model=FALLBACK_MODEL,
+            messages=messages,
+            **_cap_kwargs_for_model(FALLBACK_MODEL),
+        )
         txt = (r.choices[0].message.content or "").strip()
         return {"model_used": FALLBACK_MODEL, "reply": strip_cues(txt)}
 
 def tts_bytes(text: str, voice: Optional[str]) -> bytes:
     try:
+        # New SDK returns a file-like object for speech
         res = sclient.audio.speech.create(model=TTS_MODEL, voice=voice or TTS_VOICE, input=text)
-        if hasattr(res, "read"): return res.read() or b""
-        for attr in ("to_bytes","bytes","content"):
+        if hasattr(res, "read"):
+            return res.read() or b""
+        for attr in ("to_bytes", "bytes", "content"):
             if hasattr(res, attr):
                 v = getattr(res, attr)
                 return v() if callable(v) else (v or b"")
@@ -207,7 +243,7 @@ def stt_text(raw: bytes) -> str:
     try:
         file_tuple = ("speech.webm", io.BytesIO(raw), "audio/webm")
         tr = sclient.audio.transcriptions.create(model=STT_MODEL, file=file_tuple)
-        text = getattr(tr, "text", None) or (tr.__dict__.get("text") if hasattr(tr, "__dict__") else "")
+        text = getattr(tr, "text", None) or (getattr(tr, "__dict__", {}).get("text"))
         return (text or "").strip()
     except Exception as e:
         log.error("STT failed: %r", e)
@@ -225,10 +261,14 @@ async def index():
 
 @app.post("/chat")
 async def chat(payload: ChatIn):
+    # Load + merge profile memory
     server_profile = get_profile_for(payload.client_id)
     merged = merge_and_save_profile(payload.client_id, payload.profile)
+
     messages = build_messages(payload, merged)
-    res = await call_chat(messages)
+
+    # If this is a seed ask, prefer the fast model once
+    res = await call_chat(messages, prefer_fast=payload.include_seed)
     res["profile"] = merged.model_dump()
     return JSONResponse(res)
 
