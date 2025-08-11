@@ -20,7 +20,6 @@ let history = []; // {sender: "you"|"coach", text}
 let lastCoach = "";
 let cooldown = false;
 
-// iOS Safari needs user gesture to start audio; we start TTS after first click.
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
 
 // ---- Helpers ----
@@ -46,11 +45,17 @@ function setStatus(s) {
 }
 
 function setTalking(on) {
+  if (!avatarEl) return;
   avatarEl.classList.toggle("talking", !!on);
 }
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+// Strip any [[CUE_*]] / [[ESCALATE_GROWNUP]] tokens from text
+function stripCues(s) {
+  return (s || "").replace(/\s*\[\[(?:CUE_[A-Z_]+|ESCALATE_GROWNUP)\]\]\s*/g, "").trim();
 }
 
 // ---- Speech Recognition (browser) ----
@@ -64,7 +69,8 @@ function makeRecognizer(lang) {
   return rec;
 }
 
-async function listenOnce(lang, timeoutMs = 10000) {
+// Tighter timeout so the loop feels responsive
+async function listenOnce(lang, timeoutMs = 7000) {
   const rec = makeRecognizer(lang);
   if (!rec) throw new Error("SpeechRecognition not supported.");
   return new Promise((resolve, reject) => {
@@ -90,9 +96,7 @@ async function listenOnce(lang, timeoutMs = 10000) {
       clearTimeout(to);
       reject(e.error || e.message || "rec-error");
     };
-    rec.onend = () => {
-      // If ended without result and not done yet, let timeout fire.
-    };
+    rec.onend = () => { /* allow timeout if no result */ };
     rec.start();
   });
 }
@@ -102,9 +106,9 @@ async function callChat({ user_text = "", include_seed = false }) {
   const payload = {
     user_text,
     include_seed,
-    name: nameEl.value || "Emily",
-    age: Number(ageEl.value || 5),
-    mode: teenEl.checked ? "teen" : "child",
+    name: nameEl?.value || "Emily",
+    age: Number(ageEl?.value || 5),
+    mode: teenEl?.checked ? "teen" : "child",
     objective: "gentle warm-up",
     history,
   };
@@ -117,8 +121,12 @@ async function callChat({ user_text = "", include_seed = false }) {
   return res.json();
 }
 
+// ---- TTS ----
 async function speak(text, { voice } = {}) {
-  // Pause mic via "cooldown" so we don’t hear our own TTS.
+  // Remove cues from what we show/say
+  const clean = stripCues(text);
+
+  // Pause mic via cooldown so we don’t hear our own TTS.
   cooldown = true;
   setTalking(true);
   setStatus("Speaking…");
@@ -127,28 +135,43 @@ async function speak(text, { voice } = {}) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      text,
+      text: clean,
       voice: voice || undefined,
       model: undefined,
       format: "mp3",
     }),
   });
-  if (!res.ok) throw new Error("tts failed");
+  if (!res.ok) {
+    setTalking(false);
+    setStatus("Listening…");
+    await sleep(IS_IOS ? 1000 : 700);
+    cooldown = false;
+    appendBubble("coach", "Sorry, TTS failed.");
+    return;
+  }
 
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   audioEl.src = url;
 
+  // Attempt a couple of plays in case autoplay is sticky
+  let played = false;
+  for (let i = 0; i < 2; i++) {
+    try { await audioEl.play(); played = true; break; }
+    catch { await sleep(150); }
+  }
+
   await new Promise((resolve) => {
     audioEl.onended = resolve;
     audioEl.onerror = resolve;
-    audioEl.play().catch(resolve);
+    if (!played) resolve();
   });
 
   setTalking(false);
   setStatus("Listening…");
-  // Short cooldown so recognizer doesn’t pick tail of TTS
-  await sleep(IS_IOS ? 1800 : 1200);
+
+  // Shorter echo guard = faster back‑and‑forth
+  await sleep(IS_IOS ? 1000 : 650);
   cooldown = false;
 }
 
@@ -164,13 +187,15 @@ async function handsFree() {
     appendBubble("you", "(Starting)");
     const seed = await callChat({ include_seed: true });
     modelEl.textContent = `Model: ${seed.model_used || seed.model || "?"}`;
+
     if (seed.reply) {
-      appendBubble("coach", seed.reply);
-      history.push({ sender: "coach", text: seed.reply });
-      lastCoach = seed.reply;
-      await speak(seed.reply, {});
+      const replyClean = stripCues(seed.reply);
+      appendBubble("coach", replyClean);
+      history.push({ sender: "coach", text: replyClean });
+      lastCoach = replyClean;
+      await speak(replyClean, {});
     }
-  } catch (e) {
+  } catch {
     appendBubble("coach", "I had trouble starting. Try again?");
     setStatus("Idle");
     running = false;
@@ -183,24 +208,28 @@ async function handsFree() {
   while (running) {
     try {
       if (cooldown) {
-        await sleep(200);
+        await sleep(120);
         continue;
       }
       setStatus("Listening… (say something)");
       let transcript = "";
       try {
-        transcript = await listenOnce(langEl.value || "en-US", 12000);
-      } catch (e) {
-        // timeout or no mic — allow the loop to continue
+        transcript = await listenOnce(langEl?.value || "en-US", 7000);
+      } catch {
+        // timeout/no speech; keep loop alive and try again
         if (!running) break;
         continue;
       }
       transcript = (transcript || "").trim();
 
-      // Echo guard: if transcript is too similar to last coach line, skip.
-      if (lastCoach && transcript && lastCoach.toLowerCase().includes(transcript.toLowerCase())) {
-        // likely echo
-        continue;
+      // Echo guard: skip if what we heard is contained in the last coach line
+      if (lastCoach && transcript) {
+        const a = lastCoach.toLowerCase().replace(/[^\w\s]/g, " ");
+        const b = transcript.toLowerCase().replace(/[^\w\s]/g, " ");
+        if (a.includes(b) || b.includes(a)) {
+          // likely echo (mic caught TTS)
+          continue;
+        }
       }
 
       if (transcript) {
@@ -211,7 +240,7 @@ async function handsFree() {
       const res = await callChat({ user_text: transcript, include_seed: false });
       modelEl.textContent = `Model: ${res.model_used || res.model || "?"}`;
 
-      const reply = (res.reply || "").trim();
+      const reply = stripCues(res.reply || "");
       if (!reply) continue;
 
       appendBubble("coach", reply);
@@ -219,12 +248,11 @@ async function handsFree() {
       lastCoach = reply;
 
       await speak(reply, {});
-      // slight idle pause
-      await sleep(100);
+      await sleep(60);
     } catch (e) {
       console.error(e);
       appendBubble("coach", "Hmm, I lost you for a second. Let's try again?");
-      await sleep(800);
+      await sleep(500);
     }
   }
 
@@ -238,6 +266,7 @@ startBtn.addEventListener("click", async () => {
   if (running) return;
   handsFree();
 });
+
 stopBtn.addEventListener("click", () => {
   running = false;
 });
@@ -252,13 +281,13 @@ sendBtn.addEventListener("click", async () => {
   try {
     const res = await callChat({ user_text: msg, include_seed: false });
     modelEl.textContent = `Model: ${res.model_used || res.model || "?"}`;
-    const reply = (res.reply || "").trim();
+    const reply = stripCues(res.reply || "");
     if (!reply) return;
     appendBubble("coach", reply);
     history.push({ sender: "coach", text: reply });
     lastCoach = reply;
     await speak(reply, {});
-  } catch (e) {
+  } catch {
     appendBubble("coach", "I couldn’t send that. Try again?");
   }
 });
