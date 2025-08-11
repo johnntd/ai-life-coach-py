@@ -1,262 +1,271 @@
-(() => {
-  // ========= DOM =========
-  const startBtn = document.getElementById("start");
-  const stopBtn  = document.getElementById("stop");
-  const sendBtn  = document.getElementById("send");
-  const textIn   = document.getElementById("text");
-  const logEl    = document.getElementById("log");
-  const statusEl = document.getElementById("status");
-  const modelEl  = document.getElementById("model");
-  const teenCbx  = document.getElementById("teen");
-  const nameIn   = document.getElementById("name");
-  const ageSel   = document.getElementById("age");
-  const langSel  = document.getElementById("lang");
-  const audioEl  = document.getElementById("ttsAudio");
+// ---- Elements ----
+const $ = (s) => document.querySelector(s);
+const logEl = $("#log");
+const statusEl = $("#status");
+const modelEl = $("#model");
+const nameEl = $("#name");
+const ageEl = $("#age");
+const teenEl = $("#teen");
+const langEl = $("#lang");
+const startBtn = $("#start");
+const stopBtn = $("#stop");
+const sendBtn = $("#send");
+const textEl = $("#text");
+const avatarEl = $("#avatar");
+const audioEl = $("#ttsAudio");
 
-  const toast    = document.getElementById("consentToast");
-  const enableBtn= document.getElementById("enableStart");
-  const skipBtn  = document.getElementById("skipEnable");
+// ---- State ----
+let running = false;
+let history = []; // {sender: "you"|"coach", text}
+let lastCoach = "";
+let cooldown = false;
 
-  // ========= State =========
-  let listening = false;
-  let talking   = false;
-  let cooldown  = false;   // echo guard
-  let hasMicPermission = false;
-  let mediaStream = null;
-  let recognizer = null;   // SpeechRecognition instance (browser)
-  let lang = "en-US";
+// iOS Safari needs user gesture to start audio; we start TTS after first click.
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
 
-  // ========= Utils =========
-  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+// ---- Helpers ----
+function appendBubble(sender, text) {
+  const div = document.createElement("div");
+  div.className = `bubble ${sender === "you" ? "you" : "coach"}`;
+  div.innerHTML = `<b>${sender === "you" ? "You" : "Miss Sunny"}:</b> ${escapeHtml(
+    text
+  )}`;
+  logEl.appendChild(div);
+  logEl.scrollTop = logEl.scrollHeight;
+}
 
-  function setStatus(s){ statusEl.textContent = s; }
-  function setTalking(on){
-    talking = on;
-    // auto-pause microphone while speaking to avoid feedback
-    if (on) pauseMic();
-    else resumeMic();
-  }
+function escapeHtml(s) {
+  return (s || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
 
-  function addBubble(text, who){
-    const div = document.createElement("div");
-    div.className = `bubble ${who === "you" ? "you" : "coach"}`;
-    div.textContent = text;
-    logEl.appendChild(div);
-    logEl.scrollTop = logEl.scrollHeight;
-  }
+function setStatus(s) {
+  statusEl.textContent = s;
+}
 
-  async function fetchJSON(url, body){
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {"Content-Type":"application/json"},
-      body: JSON.stringify(body||{})
-    });
-    if (!res.ok) throw new Error(`${url} ${res.status}`);
-    return res.json();
-  }
+function setTalking(on) {
+  avatarEl.classList.toggle("talking", !!on);
+}
 
-  // ========= Mic Permission Toast =========
-  function showToast(){ toast.classList.add("show"); }
-  function hideToast(){ toast.classList.remove("show"); }
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
-  async function requestMicPermission({autoStart=false}={}){
-    try{
-      setStatus("Requesting mic…");
-      mediaStream = await navigator.mediaDevices.getUserMedia({audio:true});
-      // immediately close tracks; we only needed permission probe here
-      mediaStream.getTracks().forEach(t=>t.stop());
-      hasMicPermission = true;
-      hideToast();
-      setStatus("Ready");
-      if (autoStart) startFlow();
-    }catch(err){
-      console.warn("Mic permission error:", err);
-      hasMicPermission = false;
-      hideToast();               // never block UI
-      setStatus("Mic not enabled");
-    }
-  }
+// ---- Speech Recognition (browser) ----
+function makeRecognizer(lang) {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return null;
+  const rec = new SR();
+  rec.lang = lang || "en-US";
+  rec.interimResults = false;
+  rec.maxAlternatives = 1;
+  return rec;
+}
 
-  // ========= STT (browser SpeechRecognition) =========
-  function createRecognizer(){
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) return null;
-    const r = new SR();
-    r.lang = lang;
-    r.continuous = false;
-    r.interimResults = false;
-    r.maxAlternatives = 1;
-    r.onresult = (ev)=>{
-      const txt = ev.results[0][0].transcript.trim();
-      if (!txt) return;
-      addBubble(txt, "you");
-      chatTurn(txt);
+async function listenOnce(lang, timeoutMs = 10000) {
+  const rec = makeRecognizer(lang);
+  if (!rec) throw new Error("SpeechRecognition not supported.");
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const to = setTimeout(() => {
+      if (!done) {
+        done = true;
+        try { rec.stop(); } catch {}
+        reject(new Error("timeout"));
+      }
+    }, timeoutMs);
+
+    rec.onresult = (e) => {
+      if (done) return;
+      done = true;
+      clearTimeout(to);
+      const txt = e.results?.[0]?.[0]?.transcript || "";
+      resolve(txt);
     };
-    r.onerror = (e)=> addBubble(`Mic error: ${e.error}`, "coach");
-    r.onend = () => { if (listening && !talking) startRecognizer(); };
-    return r;
-  }
+    rec.onerror = (e) => {
+      if (done) return;
+      done = true;
+      clearTimeout(to);
+      reject(e.error || e.message || "rec-error");
+    };
+    rec.onend = () => {
+      // If ended without result and not done yet, let timeout fire.
+    };
+    rec.start();
+  });
+}
 
-  function startRecognizer(){
-    try{
-      if (!recognizer) recognizer = createRecognizer();
-      if (recognizer) recognizer.start();
-    }catch(_){/* sometimes throws if already started */}
-  }
-  function stopRecognizer(){
-    try{ recognizer && recognizer.stop(); }catch(_){}
-  }
-  function pauseMic(){ stopRecognizer(); }
-  function resumeMic(){ if (listening) startRecognizer(); }
+// ---- Backend calls ----
+async function callChat({ user_text = "", include_seed = false }) {
+  const payload = {
+    user_text,
+    include_seed,
+    name: nameEl.value || "Emily",
+    age: Number(ageEl.value || 5),
+    mode: teenEl.checked ? "teen" : "child",
+    objective: "gentle warm-up",
+    history,
+  };
+  const res = await fetch("/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error("chat failed");
+  return res.json();
+}
 
-  // ========= TTS =========
-  async function speak(text, { voice } = {}){
-    cooldown = true;
-    setTalking(true);
-    setStatus("Speaking…");
-    addMouthCue(text); // avatar cue parsing stays visual-only
+async function speak(text, { voice } = {}) {
+  // Pause mic via "cooldown" so we don’t hear our own TTS.
+  cooldown = true;
+  setTalking(true);
+  setStatus("Speaking…");
 
-    const res = await fetch("/tts", {
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({
-        text,
-        voice: voice || undefined,
-        model: undefined,
-        format: "mp3"
-      }),
-    });
+  const res = await fetch("/tts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      text,
+      voice: voice || undefined,
+      model: undefined,
+      format: "mp3",
+    }),
+  });
+  if (!res.ok) throw new Error("tts failed");
 
-    if (!res.ok){
-      setTalking(false);
-      cooldown = false;
-      addBubble("Sorry, TTS failed.", "coach");
-      return;
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  audioEl.src = url;
+
+  await new Promise((resolve) => {
+    audioEl.onended = resolve;
+    audioEl.onerror = resolve;
+    audioEl.play().catch(resolve);
+  });
+
+  setTalking(false);
+  setStatus("Listening…");
+  // Short cooldown so recognizer doesn’t pick tail of TTS
+  await sleep(IS_IOS ? 1800 : 1200);
+  cooldown = false;
+}
+
+// ---- Main loop ----
+async function handsFree() {
+  running = true;
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+
+  // Seed (coach speaks first)
+  try {
+    setStatus("Starting…");
+    appendBubble("you", "(Starting)");
+    const seed = await callChat({ include_seed: true });
+    modelEl.textContent = `Model: ${seed.model_used || seed.model || "?"}`;
+    if (seed.reply) {
+      appendBubble("coach", seed.reply);
+      history.push({ sender: "coach", text: seed.reply });
+      lastCoach = seed.reply;
+      await speak(seed.reply, {});
     }
-
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    audioEl.src = url;
-
-    try { await audioEl.play(); }
-    catch(e){ await sleep(250); try{ await audioEl.play(); } catch(_){/* ignore */} }
-
-    await new Promise(resolve=>{
-      audioEl.onended = resolve;
-      audioEl.onerror = resolve;
-    });
-
-    setTalking(false);
-    setStatus("Listening…");
-    await sleep(900); // shorter echo-guard tail
-    cooldown = false;
-  }
-
-  function addMouthCue(text){
-    // If you’re driving lip-sync elsewhere, parse [[CUE_*]] here if needed.
-    // (No-op for now to keep previous behavior intact.)
-    return text;
-  }
-
-  // ========= Chat turn =========
-  async function chatTurn(userText){
-    try{
-      setStatus("Thinking…");
-      const payload = {
-        user_text: userText || "",
-        name: nameIn.value || "Emily",
-        age: parseInt(ageSel.value,10) || 5,
-        mode: teenCbx.checked ? "teen" : "child",
-        objective: "gentle morning warm-up",
-        include_seed: !userText, // seed on first auto prompt
-        lang: lang
-      };
-      const data = await fetchJSON("/chat", payload);
-
-      if (data.reply){
-        addBubble(data.reply, "coach");
-        await speak(data.reply, { voice: undefined });
-      }else{
-        addBubble("Sorry, I didn’t get a reply.", "coach");
-      }
-      setStatus("Listening…");
-    }catch(err){
-      addBubble(`Network error talking to /chat`, "coach");
-      console.error(err);
-      setStatus("Ready");
-    }
-  }
-
-  // ========= Flow controls =========
-  async function startFlow(){
-    if (listening) return;
-    listening = true;
-    startBtn.disabled = true;
-    stopBtn.disabled  = false;
-    lang = langSel.value || "en-US";
-    modelEl.textContent = "Model: gpt-4o";
-
-    // Kick off with a seed turn
-    addBubble("Hi friend! I’m Miss Sunny. How are you feeling—happy, okay, or not great?", "coach");
-    await speak("Hi friend! I’m Miss Sunny. How are you feeling—happy, okay, or not great?", {});
-
-    setStatus("Listening…");
-    resumeMic();
-  }
-
-  function stopFlow(){
-    listening = false;
-    stopRecognizer();
-    startBtn.disabled = false;
-    stopBtn.disabled  = true;
+  } catch (e) {
+    appendBubble("coach", "I had trouble starting. Try again?");
     setStatus("Idle");
+    running = false;
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    return;
   }
 
-  // ========= Wire up UI =========
-  startBtn.addEventListener("click", async ()=>{
-    if (!hasMicPermission){
-      await requestMicPermission({autoStart:true});
-    }else{
-      startFlow();
-    }
-  });
-
-  stopBtn.addEventListener("click", stopFlow);
-
-  sendBtn.addEventListener("click", ()=>{
-    const v = (textIn.value||"").trim();
-    if (!v) return;
-    textIn.value = "";
-    addBubble(v, "you");
-    chatTurn(v);
-  });
-
-  textIn.addEventListener("keydown",(e)=>{
-    if (e.key === "Enter"){
-      e.preventDefault();
-      sendBtn.click();
-    }
-  });
-
-  enableBtn.addEventListener("click", ()=> requestMicPermission({autoStart:true}));
-  skipBtn.addEventListener("click", ()=> hideToast());
-
-  // Show mic toast on load (non-blocking)
-  window.addEventListener("load", async ()=>{
-    // Try to hint permission state; always show toast in HTTP (localhost) where
-    // Permissions API may be limited.
-    try{
-      if (navigator.permissions && navigator.permissions.query){
-        const p = await navigator.permissions.query({name:"microphone"});
-        if (p.state !== "granted") showToast();
-        p.onchange = () => {
-          if (p.state === "granted"){ hasMicPermission = true; hideToast(); }
-        };
-      }else{
-        showToast();
+  // Loop: listen → send → speak
+  while (running) {
+    try {
+      if (cooldown) {
+        await sleep(200);
+        continue;
       }
-    }catch{ showToast(); }
-    setStatus("Ready");
-  });
+      setStatus("Listening… (say something)");
+      let transcript = "";
+      try {
+        transcript = await listenOnce(langEl.value || "en-US", 12000);
+      } catch (e) {
+        // timeout or no mic — allow the loop to continue
+        if (!running) break;
+        continue;
+      }
+      transcript = (transcript || "").trim();
 
-})();
+      // Echo guard: if transcript is too similar to last coach line, skip.
+      if (lastCoach && transcript && lastCoach.toLowerCase().includes(transcript.toLowerCase())) {
+        // likely echo
+        continue;
+      }
+
+      if (transcript) {
+        appendBubble("you", transcript);
+        history.push({ sender: "you", text: transcript });
+      }
+
+      const res = await callChat({ user_text: transcript, include_seed: false });
+      modelEl.textContent = `Model: ${res.model_used || res.model || "?"}`;
+
+      const reply = (res.reply || "").trim();
+      if (!reply) continue;
+
+      appendBubble("coach", reply);
+      history.push({ sender: "coach", text: reply });
+      lastCoach = reply;
+
+      await speak(reply, {});
+      // slight idle pause
+      await sleep(100);
+    } catch (e) {
+      console.error(e);
+      appendBubble("coach", "Hmm, I lost you for a second. Let's try again?");
+      await sleep(800);
+    }
+  }
+
+  setStatus("Stopped");
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+}
+
+// ---- UI wiring ----
+startBtn.addEventListener("click", async () => {
+  if (running) return;
+  handsFree();
+});
+stopBtn.addEventListener("click", () => {
+  running = false;
+});
+
+sendBtn.addEventListener("click", async () => {
+  const msg = textEl.value.trim();
+  if (!msg) return;
+  textEl.value = "";
+  appendBubble("you", msg);
+  history.push({ sender: "you", text: msg });
+
+  try {
+    const res = await callChat({ user_text: msg, include_seed: false });
+    modelEl.textContent = `Model: ${res.model_used || res.model || "?"}`;
+    const reply = (res.reply || "").trim();
+    if (!reply) return;
+    appendBubble("coach", reply);
+    history.push({ sender: "coach", text: reply });
+    lastCoach = reply;
+    await speak(reply, {});
+  } catch (e) {
+    appendBubble("coach", "I couldn’t send that. Try again?");
+  }
+});
+
+textEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") sendBtn.click();
+});
+
+// Initial UI
+setStatus("Idle");
