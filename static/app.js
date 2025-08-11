@@ -1,255 +1,262 @@
-// ---- State ---------------------------------------------------------------
-let recognizing = false;
-let recognition;
-let isSpeaking = false;
-let firstTurn = true;
-let booted = false;
+(() => {
+  // ========= DOM =========
+  const startBtn = document.getElementById("start");
+  const stopBtn  = document.getElementById("stop");
+  const sendBtn  = document.getElementById("send");
+  const textIn   = document.getElementById("text");
+  const logEl    = document.getElementById("log");
+  const statusEl = document.getElementById("status");
+  const modelEl  = document.getElementById("model");
+  const teenCbx  = document.getElementById("teen");
+  const nameIn   = document.getElementById("name");
+  const ageSel   = document.getElementById("age");
+  const langSel  = document.getElementById("lang");
+  const audioEl  = document.getElementById("ttsAudio");
 
-let userLang = "en-US";
-let userAge = 5;
-let sessionMode = "child"; // child | teen | adult
-let userName = "Friend";
+  const toast    = document.getElementById("consentToast");
+  const enableBtn= document.getElementById("enableStart");
+  const skipBtn  = document.getElementById("skipEnable");
 
-const history = []; // { sender: "you"|"coach", text: string }
+  // ========= State =========
+  let listening = false;
+  let talking   = false;
+  let cooldown  = false;   // echo guard
+  let hasMicPermission = false;
+  let mediaStream = null;
+  let recognizer = null;   // SpeechRecognition instance (browser)
+  let lang = "en-US";
 
-// ---- Elements ------------------------------------------------------------
-const gate = document.getElementById("gate");
-const enableBtn = document.getElementById("enableBtn");
+  // ========= Utils =========
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-const startBtn = document.getElementById("startBtn");
-const stopBtn = document.getElementById("stopBtn");
-const statusChip = document.getElementById("status");
-const modelChip = document.getElementById("modelChip");
-const outputDiv = document.getElementById("output");
-const audioEl = document.getElementById("ttsAudio");
-const ageSel = document.getElementById("age");
-const langSel = document.getElementById("lang");
-
-// ---- Helpers -------------------------------------------------------------
-function setStatus(text) {
-  statusChip.textContent = text;
-}
-function addBubble(sender, text) {
-  history.push({ sender, text });
-  const el = document.createElement("div");
-  el.className = `bubble ${sender === "you" ? "you" : "coach"}`;
-  el.textContent = text;
-  outputDiv.appendChild(el);
-  outputDiv.scrollTop = outputDiv.scrollHeight;
-}
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-// ---- Web Speech (STT) ----------------------------------------------------
-async function initSTT() {
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) {
-    alert("SpeechRecognition not supported in this browser. Try Chrome.");
-    return;
+  function setStatus(s){ statusEl.textContent = s; }
+  function setTalking(on){
+    talking = on;
+    // auto-pause microphone while speaking to avoid feedback
+    if (on) pauseMic();
+    else resumeMic();
   }
-  recognition = new SR();
-  recognition.lang = userLang;
-  recognition.continuous = true;
-  recognition.interimResults = false;
 
-  recognition.onstart = () => {
-    recognizing = true;
-    setStatus("Listening…");
-    startBtn.disabled = true; // already listening
-    stopBtn.disabled = false;
-  };
-  recognition.onerror = (e) => {
-    console.error("STT error:", e.error);
-    if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-      setStatus("Mic blocked. Allow mic in browser settings.");
+  function addBubble(text, who){
+    const div = document.createElement("div");
+    div.className = `bubble ${who === "you" ? "you" : "coach"}`;
+    div.textContent = text;
+    logEl.appendChild(div);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  async function fetchJSON(url, body){
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify(body||{})
+    });
+    if (!res.ok) throw new Error(`${url} ${res.status}`);
+    return res.json();
+  }
+
+  // ========= Mic Permission Toast =========
+  function showToast(){ toast.classList.add("show"); }
+  function hideToast(){ toast.classList.remove("show"); }
+
+  async function requestMicPermission({autoStart=false}={}){
+    try{
+      setStatus("Requesting mic…");
+      mediaStream = await navigator.mediaDevices.getUserMedia({audio:true});
+      // immediately close tracks; we only needed permission probe here
+      mediaStream.getTracks().forEach(t=>t.stop());
+      hasMicPermission = true;
+      hideToast();
+      setStatus("Ready");
+      if (autoStart) startFlow();
+    }catch(err){
+      console.warn("Mic permission error:", err);
+      hasMicPermission = false;
+      hideToast();               // never block UI
+      setStatus("Mic not enabled");
     }
-  };
-  recognition.onend = () => {
-    recognizing = false;
-    if (!isSpeaking) setStatus("Idle");
-    startBtn.disabled = false;
-    stopBtn.disabled = true;
-  };
-  recognition.onresult = async (e) => {
-    const res = e.results[e.results.length - 1];
-    if (!res || res.isFinal !== true) return;
-    const transcript = res[0]?.transcript?.trim();
-    if (!transcript) return;
-    addBubble("you", transcript);
-    await handleUserText(transcript);
-  };
-}
-
-function startListening() {
-  try { recognition && recognition.start(); } catch {}
-}
-function stopListening() {
-  try { recognition && recognition.stop(); } catch {}
-}
-
-// ---- Chat + TTS ----------------------------------------------------------
-async function handleUserText(userText) {
-  // Pause mic during model+tts cycle to avoid echo
-  stopListening();
-  setStatus("Thinking…");
-
-  const payload = {
-    user_text: userText || "",
-    name: userName,
-    age: userAge,
-    mode: sessionMode,
-    lang: userLang,
-    include_seed: firstTurn,
-    history
-  };
-
-  let data;
-  try {
-    const res = await fetch("/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-    data = await res.json();
-    if (!res.ok) throw new Error(data.detail || "Chat failed");
-  } catch (err) {
-    console.error("Chat error:", err);
-    setStatus("Chat error");
-    // Resume listening so user can try again
-    await sleep(300);
-    startListening();
-    return;
   }
 
-  firstTurn = false;
-  const coachText = data.reply || "";
-  const modelUsed = data.model_used || "…";
-  modelChip.textContent = `Model: ${modelUsed}`;
-  addBubble("coach", coachText);
+  // ========= STT (browser SpeechRecognition) =========
+  function createRecognizer(){
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) return null;
+    const r = new SR();
+    r.lang = lang;
+    r.continuous = false;
+    r.interimResults = false;
+    r.maxAlternatives = 1;
+    r.onresult = (ev)=>{
+      const txt = ev.results[0][0].transcript.trim();
+      if (!txt) return;
+      addBubble(txt, "you");
+      chatTurn(txt);
+    };
+    r.onerror = (e)=> addBubble(`Mic error: ${e.error}`, "coach");
+    r.onend = () => { if (listening && !talking) startRecognizer(); };
+    return r;
+  }
 
-  await speak(coachText);
+  function startRecognizer(){
+    try{
+      if (!recognizer) recognizer = createRecognizer();
+      if (recognizer) recognizer.start();
+    }catch(_){/* sometimes throws if already started */}
+  }
+  function stopRecognizer(){
+    try{ recognizer && recognizer.stop(); }catch(_){}
+  }
+  function pauseMic(){ stopRecognizer(); }
+  function resumeMic(){ if (listening) startRecognizer(); }
 
-  // small tail to avoid self-capture on some devices
-  await sleep(600);
-  startListening();
-}
+  // ========= TTS =========
+  async function speak(text, { voice } = {}){
+    cooldown = true;
+    setTalking(true);
+    setStatus("Speaking…");
+    addMouthCue(text); // avatar cue parsing stays visual-only
 
-async function speak(text) {
-  if (!text) return;
-  isSpeaking = true;
-  setStatus("Speaking…");
-
-  try {
     const res = await fetch("/tts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text })
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({
+        text,
+        voice: voice || undefined,
+        model: undefined,
+        format: "mp3"
+      }),
     });
-    if (!res.ok) {
-      console.error("TTS failed:", await res.text());
-      isSpeaking = false;
-      setStatus("Idle");
+
+    if (!res.ok){
+      setTalking(false);
+      cooldown = false;
+      addBubble("Sorry, TTS failed.", "coach");
       return;
     }
-    const buf = await res.arrayBuffer();
-    const blob = new Blob([buf], { type: "audio/mpeg" });
-    const url = URL.createObjectURL(blob);
 
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
     audioEl.src = url;
 
-    // Attempt play; iOS needs resolved user gesture first (we gate with Enable button)
     try { await audioEl.play(); }
-    catch (err) {
-      console.warn("Audio play blocked, waiting for gesture:", err);
-      setStatus("Tap Enable Audio");
-      return;
-    }
+    catch(e){ await sleep(250); try{ await audioEl.play(); } catch(_){/* ignore */} }
 
-    await new Promise((resolve) => {
+    await new Promise(resolve=>{
       audioEl.onended = resolve;
       audioEl.onerror = resolve;
     });
-  } finally {
-    isSpeaking = false;
+
+    setTalking(false);
+    setStatus("Listening…");
+    await sleep(900); // shorter echo-guard tail
+    cooldown = false;
+  }
+
+  function addMouthCue(text){
+    // If you’re driving lip-sync elsewhere, parse [[CUE_*]] here if needed.
+    // (No-op for now to keep previous behavior intact.)
+    return text;
+  }
+
+  // ========= Chat turn =========
+  async function chatTurn(userText){
+    try{
+      setStatus("Thinking…");
+      const payload = {
+        user_text: userText || "",
+        name: nameIn.value || "Emily",
+        age: parseInt(ageSel.value,10) || 5,
+        mode: teenCbx.checked ? "teen" : "child",
+        objective: "gentle morning warm-up",
+        include_seed: !userText, // seed on first auto prompt
+        lang: lang
+      };
+      const data = await fetchJSON("/chat", payload);
+
+      if (data.reply){
+        addBubble(data.reply, "coach");
+        await speak(data.reply, { voice: undefined });
+      }else{
+        addBubble("Sorry, I didn’t get a reply.", "coach");
+      }
+      setStatus("Listening…");
+    }catch(err){
+      addBubble(`Network error talking to /chat`, "coach");
+      console.error(err);
+      setStatus("Ready");
+    }
+  }
+
+  // ========= Flow controls =========
+  async function startFlow(){
+    if (listening) return;
+    listening = true;
+    startBtn.disabled = true;
+    stopBtn.disabled  = false;
+    lang = langSel.value || "en-US";
+    modelEl.textContent = "Model: gpt-4o";
+
+    // Kick off with a seed turn
+    addBubble("Hi friend! I’m Miss Sunny. How are you feeling—happy, okay, or not great?", "coach");
+    await speak("Hi friend! I’m Miss Sunny. How are you feeling—happy, okay, or not great?", {});
+
+    setStatus("Listening…");
+    resumeMic();
+  }
+
+  function stopFlow(){
+    listening = false;
+    stopRecognizer();
+    startBtn.disabled = false;
+    stopBtn.disabled  = true;
     setStatus("Idle");
   }
-}
 
-// ---- Bootstrapping -------------------------------------------------------
-async function unlockAudio() {
-  // Create an AudioContext and resume to satisfy autoplay policies
-  const AC = window.AudioContext || window.webkitAudioContext;
-  try {
-    const ctx = new AC();
-    if (ctx.state === "suspended") await ctx.resume();
-    // play a 1-frame silent buffer
-    const node = ctx.createBufferSource();
-    node.buffer = ctx.createBuffer(1, 1, 22050);
-    node.connect(ctx.destination);
-    node.start(0);
-  } catch (e) {
-    console.warn("AudioContext unlock failed", e);
-  }
-}
+  // ========= Wire up UI =========
+  startBtn.addEventListener("click", async ()=>{
+    if (!hasMicPermission){
+      await requestMicPermission({autoStart:true});
+    }else{
+      startFlow();
+    }
+  });
 
-async function bootAndAutoStart() {
-  if (booted) return;
-  booted = true;
+  stopBtn.addEventListener("click", stopFlow);
 
-  // Read UI selections
-  userLang = langSel.value || "en-US";
-  userAge = parseInt(ageSel.value || "5", 10);
-  sessionMode = userAge >= 12 ? "teen" : "child";
+  sendBtn.addEventListener("click", ()=>{
+    const v = (textIn.value||"").trim();
+    if (!v) return;
+    textIn.value = "";
+    addBubble(v, "you");
+    chatTurn(v);
+  });
 
-  await initSTT();
+  textIn.addEventListener("keydown",(e)=>{
+    if (e.key === "Enter"){
+      e.preventDefault();
+      sendBtn.click();
+    }
+  });
 
-  // Miss Sunny greets first automatically
-  addBubble("coach", "Hi friend! I’m Miss Sunny. How are you feeling—happy, okay, or not great?");
-  await speak("Hi friend! I’m Miss Sunny. How are you feeling—happy, okay, or not great?");
+  enableBtn.addEventListener("click", ()=> requestMicPermission({autoStart:true}));
+  skipBtn.addEventListener("click", ()=> hideToast());
 
-  // seed turn with our backend so it knows to start the session context too
-  await handleUserText(""); // include_seed will be true on first run
-}
+  // Show mic toast on load (non-blocking)
+  window.addEventListener("load", async ()=>{
+    // Try to hint permission state; always show toast in HTTP (localhost) where
+    // Permissions API may be limited.
+    try{
+      if (navigator.permissions && navigator.permissions.query){
+        const p = await navigator.permissions.query({name:"microphone"});
+        if (p.state !== "granted") showToast();
+        p.onchange = () => {
+          if (p.state === "granted"){ hasMicPermission = true; hideToast(); }
+        };
+      }else{
+        showToast();
+      }
+    }catch{ showToast(); }
+    setStatus("Ready");
+  });
 
-// ---- UI wiring -----------------------------------------------------------
-enableBtn.addEventListener("click", async () => {
-  enableBtn.disabled = true;
-  setStatus("Starting…");
-  try {
-    await unlockAudio();
-    gate.classList.add("hidden");
-    // enable manual controls too
-    startBtn.disabled = false;
-    stopBtn.disabled = false;
-
-    await bootAndAutoStart();
-  } catch (e) {
-    console.error(e);
-    setStatus("Could not start. Refresh and try again.");
-    enableBtn.disabled = false;
-    gate.classList.remove("hidden");
-  }
-});
-
-startBtn.addEventListener("click", () => {
-  // manual resume listening if user wants
-  startListening();
-});
-stopBtn.addEventListener("click", () => {
-  stopListening();
-  setStatus("Idle");
-});
-
-langSel.addEventListener("change", () => {
-  userLang = langSel.value;
-  if (recognition) recognition.lang = userLang;
-});
-
-ageSel.addEventListener("change", () => {
-  userAge = parseInt(ageSel.value || "5", 10);
-  sessionMode = userAge >= 12 ? "teen" : "child";
-});
-
-// Ready
-document.addEventListener("DOMContentLoaded", () => {
-  setStatus("Tap Enable & Start");
-});
+})();
