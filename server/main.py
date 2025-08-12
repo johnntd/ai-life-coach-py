@@ -1,288 +1,283 @@
-# server/main.py
-# ─────────────────────────────────────────────────────────────────────────────
-# Full FastAPI server preserving prior routes and behavior, with:
-# • Deterministic intro flow (name → age → assessment), single language.
-# • Memory persisted under ./data/memory.json (keyed by client_id).
-# • TTS/STT wired to OpenAI SDK (compatible calls).
-# • [[CUE_*]] removal.
-# • Short-turn constraint + token caps to keep replies brief.
-# • Optional faster model only for the very first seed turn (not used if
-#   frontend does instant greeting; kept for compatibility).
-# ─────────────────────────────────────────────────────────────────────────────
-
 import os
-import io
 import re
+import io
+import time
 import json
+import tempfile
 import logging
-from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 
-from fastapi import FastAPI, Request, Response
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from dotenv import load_dotenv
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from openai import AsyncOpenAI, OpenAI
+from openai import OpenAI
 
-# ---------- Paths ----------
-BASE_DIR   = Path(__file__).resolve().parents[1]
-STATIC_DIR = BASE_DIR / "static"
+# ------------------------------------------------------------------------------
+# Boot
+# ------------------------------------------------------------------------------
+load_dotenv()
 
-CANDIDATES = [
-    BASE_DIR / "template" / "index.html",   # original location
-    BASE_DIR / "templates" / "index.html",
-    BASE_DIR / "index.html",
-]
-for p in CANDIDATES:
-    if p.exists():
-        INDEX_HTML = p
-        break
-else:
-    INDEX_HTML = CANDIDATES[-1]
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("server.main")
 
-DATA_DIR = BASE_DIR / "data"
-DATA_DIR.mkdir(exist_ok=True)
-MEM_PATH = DATA_DIR / "memory.json"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+PRIMARY_MODEL = os.getenv("PRIMARY_MODEL", "gpt-5")
+FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "gpt-4o")
+TTS_MODEL = os.getenv("TTS_MODEL", "gpt-4o-mini-tts")
+TRANSCRIBE_MODEL = os.getenv("TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe")
+TTS_VOICE = os.getenv("TTS_VOICE", "alloy")
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*")
 
-# ---------- App ----------
-log = logging.getLogger("server")
-logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
+if not OPENAI_API_KEY:
+    log.warning("OPENAI_API_KEY is missing")
+
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 app = FastAPI()
+
+# Static files (unchanged: keep your /static dir as-is)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# CORS (keep your previous behavior)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"],
+    allow_origins=[o.strip() for o in ALLOWED_ORIGINS.split(",")] if ALLOWED_ORIGINS else ["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-# ---------- OpenAI ----------
-aclient = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))  # async chat
-sclient = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))       # sync stt/tts
+# ------------------------------------------------------------------------------
+# Models / Schemas (preserve IDs/fields used by app.js)
+# ------------------------------------------------------------------------------
 
-PRIMARY_MODEL   = os.getenv("PRIMARY_MODEL",  "gpt-5-2025-08-07")
-FALLBACK_MODEL  = os.getenv("FALLBACK_MODEL", "gpt-4o")
-FAST_SEED_MODEL = os.getenv("FAST_SEED_MODEL","gpt-4o-mini")  # for *seed only*
-
-TTS_MODEL  = os.getenv("TTS_MODEL", "gpt-4o-mini-tts")
-TTS_VOICE  = os.getenv("TTS_VOICE", "alloy")
-STT_MODEL  = os.getenv("STT_MODEL", "gpt-4o-transcribe")  # or whisper-1
-
-# ---------- Models ----------
 class HistoryItem(BaseModel):
     sender: str
     text: str
 
-class Profile(BaseModel):
-    name: Optional[str] = None
-    age: Optional[int] = None
-    notes: Optional[str] = None
+class ChatReq(BaseModel):
+    user_text: Optional[str] = ""
+    include_seed: Optional[bool] = False
+    name: Optional[str] = "Emily"
+    age: Optional[int] = 5
+    mode: Optional[str] = "child"  # "child" or "teen"
+    objective: Optional[str] = "gentle warm-up"
+    history: Optional[List[HistoryItem]] = []
+    lang: Optional[str] = "en-US"
 
-class ChatIn(BaseModel):
-    user_text: str = ""
-    include_seed: bool = False
-    name: str = "Emily"
-    age: int = 5
-    mode: str = "child"
-    objective: str = "assessment"
-    history: Optional[List[HistoryItem]] = None
-    lang: str = "en-US"
-    client_id: Optional[str] = None
-    profile: Optional[Profile] = None
+class ChatRes(BaseModel):
+    reply: str
+    model_used: str
 
-class TTSIn(BaseModel):
+class TTSReq(BaseModel):
     text: str
     voice: Optional[str] = None
-    model: Optional[str] = None
+    model: Optional[str] = None  # kept for compatibility with older app.js
 
-# ---------- Memory helpers ----------
-def _load_mem() -> Dict[str, Any]:
-    if MEM_PATH.exists():
+# ------------------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------------------
+
+def system_prompt_for_miss_sunny(req: ChatReq) -> str:
+    """
+    Keep your master prompt, trimmed for latency; no [[CUE_...]] in audio.
+    Bilingual behavior guided by 'lang' and mode.
+    """
+    # Short, clean, and deterministic prompt for your flow
+    mode_line = "Child / Teen Coaching" if req.mode in ("child", "teen") else "Adult Coaching"
+    lang_target = "Vietnamese" if req.lang.startswith("vi") else "English"
+    other_lang = "English" if lang_target == "Vietnamese" else "Vietnamese"
+
+    return (
+        "Role: You are Miss Sunny, a warm, patient, bilingual AI life coach and language teacher.\n"
+        "Constraints:\n"
+        f"- Speak mainly in {lang_target}; briefly explain tricky points in {other_lang}.\n"
+        "- Keep turns short and interactive; end with exactly one simple question.\n"
+        "- No bracketed cues like [[CUE_*]] in your text.\n"
+        f"Mode: {mode_line}.  Keep it cheerful and age-appropriate.\n"
+        "Goal: Help the learner via a fun, spoken assessment and adaptive coaching.\n"
+        "If first turn (no user text), start with a friendly greeting, ask for name and age.\n"
+    )
+
+def sanitize_reply(text: str) -> str:
+    # Strip [[CUE_...]] safely, just in case
+    text = re.sub(r"\[\[.*?\]\]", "", text or "").strip()
+    # Collapse excessive whitespace
+    text = re.sub(r"\s+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text
+
+def _chat(model: str, messages: List[dict], temperature: Optional[float] = None, max_tokens: Optional[int] = None):
+    """
+    Synchronous call to Chat Completions (SDK 1.x is sync for the default client).
+    We avoid unsupported params on GPT-5 variants.
+    """
+    kwargs = {"model": model, "messages": messages}
+
+    # Some models (e.g., certain gpt-5 variants) accept only default temperature.
+    if temperature is not None and not model.startswith("gpt-5"):
+        kwargs["temperature"] = temperature
+
+    # Some models expect 'max_completion_tokens' instead of 'max_tokens'.
+    if max_tokens is not None:
+        if model.startswith("gpt-5"):
+            kwargs["max_completion_tokens"] = max_tokens
+        else:
+            kwargs["max_tokens"] = max_tokens
+
+    return client.chat.completions.create(**kwargs)
+
+def _try_models(messages: List[dict]) -> ChatRes:
+    """
+    Try PRIMARY_MODEL first; if it returns an empty/invalid reply or errors, fallback.
+    """
+    used = None
+    text = ""
+
+    try:
+        log.info(f"[router] calling model={PRIMARY_MODEL}")
+        r = _chat(PRIMARY_MODEL, messages, temperature=None, max_tokens=320)
+        used = PRIMARY_MODEL
+        text = (r.choices[0].message.content or "").strip()
+        if not text:
+            log.info("Primary failed: Empty reply from primary")
+            used = None
+    except Exception as e:
+        log.info(f"[router] primary failed; trying fallback")
+        used = None
+
+    if used is None:
         try:
-            return json.loads(MEM_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {}
+            log.info(f"[router] calling model={FALLBACK_MODEL}")
+            r = _chat(FALLBACK_MODEL, messages, temperature=0.8, max_tokens=320)
+            used = FALLBACK_MODEL
+            text = (r.choices[0].message.content or "").strip()
+        except Exception as e:
+            log.exception("Both models failed")
+            raise
 
-def _save_mem(mem: Dict[str, Any]) -> None:
-    try:
-        MEM_PATH.write_text(json.dumps(mem, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception as e:
-        log.error("Failed to save memory: %r", e)
+    return ChatRes(reply=sanitize_reply(text), model_used=used)
 
-def get_profile_for(client_id: Optional[str]) -> Profile:
-    if not client_id:
-        return Profile()
-    mem = _load_mem()
-    data = mem.get(client_id) or {}
-    return Profile(**{k: data.get(k) for k in ("name", "age", "notes")})
+# ------------------------------------------------------------------------------
+# Routes
+# ------------------------------------------------------------------------------
 
-def merge_and_save_profile(client_id: Optional[str], incoming: Optional[Profile]) -> Profile:
-    if not client_id:
-        return incoming or Profile()
-    mem = _load_mem()
-    current = mem.get(client_id, {})
-    inc = (incoming.model_dump(exclude_none=True) if incoming else {})
-    merged = {**current, **inc}
-    mem[client_id] = merged
-    _save_mem(mem)
-    return Profile(**{k: merged.get(k) for k in ("name", "age", "notes")})
-
-# ---------- Utils ----------
-def strip_cues(text: str) -> str:
-    return re.sub(r"\[\[.*?\]\]", "", text or "").strip()
-
-def lang_name(lang_code: str) -> str:
-    # Force English output to avoid mixed-language replies
-    return "English"
-
-def build_messages(payload: ChatIn, server_profile: Profile) -> List[dict]:
-    learner_lang = lang_name(payload.lang)
-    session_role = "Teen Coaching" if payload.mode == "teen" else "Child Coaching"
-
-    child_name = (payload.profile and payload.profile.name) or server_profile.name or payload.name
-    child_age  = (payload.profile and payload.profile.age)  or server_profile.age  or payload.age
-    notes      = (payload.profile and payload.profile.notes) or server_profile.notes
-
-    memory_line = f"Known child facts → Name: {child_name or 'Unknown'}, Age: {child_age or 'Unknown'}."
-    if notes: memory_line += f" Extra notes: {notes}"
-
-    # Tight brevity constraints for every turn
-    brevity = (
-        "Reply in at most TWO short sentences (≤ 25 words total). "
-        "Ask EXACTLY one concise question. Avoid emojis and fillers."
-    )
-
-    system = (
-        "You are Miss Sunny, a warm, patient children’s coach.\n"
-        f"- Session Mode: {session_role}. Objective: {payload.objective}. Respond ONLY in {learner_lang}.\n"
-        "- Start-of-session policy:\n"
-        "  (1) If name unknown → greet and ask their name only.\n"
-        "  (2) If name known but age unknown → ask their age only.\n"
-        "  (3) If both known → begin the assessment.\n"
-        "- Assessment order: Reading/Writing → Math → Logic → Science → Social skills → General knowledge.\n"
-        "  Ask 1–2 items per section; after each, one-sentence feedback + one tip, then continue.\n"
-        f"- {brevity}\n"
-        f"- Memory: {memory_line}\n"
-    )
-
-    msgs: List[dict] = [{"role": "system", "content": system}]
-
-    if payload.history:
-        for h in payload.history:
-            if not h.text:
-                continue
-            role = "user" if h.sender == "you" else "assistant"
-            msgs.append({"role": role, "content": strip_cues(h.text)})
-
-    if payload.include_seed and not payload.user_text:
-        # Server-side seed kept for compatibility, but the frontend now speaks
-        # an instant local greeting, so this path will normally not be used.
-        seed = "Hi! What’s your name?"
-        if child_name and not child_age:
-            seed = f"Hi {child_name}! How old are you?"
-        elif child_name and child_age:
-            seed = f"Great to see you, {child_name}! Ready to start your assessment?"
-        msgs.append({"role": "assistant", "content": seed})
-    else:
-        msgs.append({"role": "user", "content": payload.user_text or ""})
-
-    return msgs
-
-def _cap_kwargs_for_model(model: str) -> dict:
-    """
-    Ensure short replies regardless of model family.
-    GPT-5 family expects `max_completion_tokens`; GPT-4o expects `max_tokens`.
-    """
-    if model.startswith("gpt-5"):
-        return {"max_completion_tokens": 96}  # ~ very short
-    # otherwise fall back to classic param
-    return {"max_tokens": 96}
-
-async def call_chat(messages: List[dict], *, prefer_fast: bool = False) -> dict:
-    model_choice = FAST_SEED_MODEL if prefer_fast else PRIMARY_MODEL
-    try:
-        log.info("[router] calling model=%s", model_choice)
-        r = await aclient.chat.completions.create(
-            model=model_choice,
-            messages=messages,
-            **_cap_kwargs_for_model(model_choice),
-        )
-        txt = (r.choices[0].message.content or "").strip()
-        if not txt:
-            raise RuntimeError("Empty reply from primary")
-        return {"model_used": model_choice, "reply": strip_cues(txt)}
-    except Exception as e:
-        log.info("[router] Primary failed: %s", getattr(e, "message", str(e)))
-        log.info("[router] calling model=%s", FALLBACK_MODEL)
-        r = await aclient.chat.completions.create(
-            model=FALLBACK_MODEL,
-            messages=messages,
-            **_cap_kwargs_for_model(FALLBACK_MODEL),
-        )
-        txt = (r.choices[0].message.content or "").strip()
-        return {"model_used": FALLBACK_MODEL, "reply": strip_cues(txt)}
-
-def tts_bytes(text: str, voice: Optional[str]) -> bytes:
-    try:
-        # New SDK returns a file-like object for speech
-        res = sclient.audio.speech.create(model=TTS_MODEL, voice=voice or TTS_VOICE, input=text)
-        if hasattr(res, "read"):
-            return res.read() or b""
-        for attr in ("to_bytes", "bytes", "content"):
-            if hasattr(res, attr):
-                v = getattr(res, attr)
-                return v() if callable(v) else (v or b"")
-    except Exception as e:
-        log.error("TTS failed: %r", e)
-    return b""
-
-def stt_text(raw: bytes) -> str:
-    try:
-        file_tuple = ("speech.webm", io.BytesIO(raw), "audio/webm")
-        tr = sclient.audio.transcriptions.create(model=STT_MODEL, file=file_tuple)
-        text = getattr(tr, "text", None) or (getattr(tr, "__dict__", {}).get("text"))
-        return (text or "").strip()
-    except Exception as e:
-        log.error("STT failed: %r", e)
-        return ""
-
-# ---------- Routes ----------
 @app.get("/")
-async def index():
-    if not INDEX_HTML.exists():
-        return PlainTextResponse(
-            "index.html not found.\nLooked in:\n- template/index.html\n- templates/index.html\n- ./index.html\n",
-            status_code=500,
-        )
-    return FileResponse(str(INDEX_HTML))
+def index():
+    """
+    Keep serving your existing templates/index.html (you mentioned templates earlier).
+    If your index.html is elsewhere, update the path below.
+    """
+    path = os.path.join("templates", "index.html")
+    return FileResponse(path)
 
 @app.post("/chat")
-async def chat(payload: ChatIn):
-    # Load + merge profile memory
-    server_profile = get_profile_for(payload.client_id)
-    merged = merge_and_save_profile(payload.client_id, payload.profile)
+async def chat(req: ChatReq):
+    """
+    Build messages with a tight system prompt + short context from the last few history items.
+    """
+    # System prompt
+    sys = system_prompt_for_miss_sunny(req)
 
-    messages = build_messages(payload, merged)
+    # A tiny rolling memory from the client history (kept short for latency)
+    ctx: List[dict] = []
+    for h in (req.history or [])[-6:]:
+        role = "user" if (h.sender or "").lower() == "you" else "assistant"
+        ctx.append({"role": role, "content": h.text or ""})
 
-    # If this is a seed ask, prefer the fast model once
-    res = await call_chat(messages, prefer_fast=payload.include_seed)
-    res["profile"] = merged.model_dump()
-    return JSONResponse(res)
+    # First-turn seed vs user text
+    if req.include_seed and not (req.user_text or "").strip():
+        user_line = ""  # Miss Sunny will start (greeting + name/age ask)
+    else:
+        user_line = req.user_text or ""
+
+    messages = [{"role": "system", "content": sys}]
+    if ctx:
+        messages.extend(ctx)
+    if user_line:
+        messages.append({"role": "user", "content": user_line})
+
+    try:
+        res = _try_models(messages)
+        return JSONResponse(content={"reply": res.reply, "model_used": res.model_used})
+    except Exception as e:
+        log.exception("chat failed")
+        return JSONResponse(status_code=500, content={"error": "chat_failed"})
 
 @app.post("/tts")
-async def tts(body: TTSIn):
-    audio = tts_bytes(body.text, body.voice)
-    return Response(content=audio, media_type="application/octet-stream")
+async def tts(req: TTSReq):
+    """
+    TTS endpoint (fixed for OpenAI Python >= 1.40):
+    - DO NOT pass `format=`.
+    - Use streaming API and return `audio/mpeg`.
+    - We strip any [[CUE_...]] just to be safe.
+    """
+    text = sanitize_reply(req.text or "")
+    voice = (req.voice or TTS_VOICE) or "alloy"
+    model = (req.model or TTS_MODEL) or "gpt-4o-mini-tts"
+
+    try:
+        # Stream to a temporary MP3 and send it back
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
+            tmp_path = tmp.name
+
+        # This is the supported pattern in the new SDK
+        with client.audio.speech.with_streaming_response.create(
+            model=model,
+            voice=voice,
+            input=text,
+        ) as resp:
+            resp.stream_to_file(tmp_path)
+
+        # Return the MP3 bytes
+        return FileResponse(tmp_path, media_type="audio/mpeg", filename="speech.mp3")
+    except TypeError as te:
+        # This is what you were seeing: unexpected keyword arg 'format'
+        log.error(f"TTS failed: {te}")
+        return JSONResponse(status_code=200, content={"error": "tts_failed"})
+    except Exception as e:
+        log.exception("TTS failed")
+        return JSONResponse(status_code=200, content={"error": "tts_failed"})
 
 @app.post("/stt")
 async def stt(request: Request):
-    raw = await request.body()
-    text = stt_text(raw)
-    return JSONResponse({"text": text})
+    """
+    Server-side transcription for MediaRecorder chunks (audio/webm).
+    We write bytes to a temp .webm and pass a file handle to the SDK
+    (most reliable across versions).
+    """
+    try:
+        data = await request.body()
+        if not data:
+            return JSONResponse(status_code=400, content={"error": "empty_audio"})
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("server.main:app", host="127.0.0.1", port=8000, reload=True)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+
+        text_out = ""
+        # Open and transcribe (synchronous call on the default client)
+        with open(tmp_path, "rb") as f:
+            tr = client.audio.transcriptions.create(
+                model=TRANSCRIBE_MODEL,
+                file=f,
+            )
+            # New SDK returns an object with 'text'
+            text_out = (tr.text or "").strip()
+
+        return JSONResponse(content={"text": text_out})
+    except Exception as e:
+        log.exception("STT failed")
+        return JSONResponse(status_code=500, content={"error": "stt_failed"})
+
+# ------------------------------------------------------------------------------
+# Health
+# ------------------------------------------------------------------------------
+
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}
