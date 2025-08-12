@@ -1,0 +1,43 @@
+# macOS / editor
+.DS_Store
+.vscode/
+*.code-workspace
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Env & secrets (DO NOT COMMIT)
+.env
+.env.*
+*.env
+*.secret
+secrets*.json
+config.local.*
+*.pem
+*.key
+*.crt
+*.p12
+*.der
+
+# Logs / runtime
+logs/
+*.log
+*.pid
+*.sqlite3
+*.db
+
+# Web build caches
+dist/
+build/
+.cache/
+*.map
+
+# Large local data
+data/
+uploads/
+recordings/
+tmp/
+path/to/file
