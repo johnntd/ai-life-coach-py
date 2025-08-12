@@ -1,0 +1,7 @@
+git checkout -b baseline-2025-08-11
+git add static/app.js server/main.py templates/index.html
+git commit -m "Baseline: working realtime voice + avatar (2025-08-11)"
+git tag -a working-baseline-2025-08-11 -m "Working baseline"
+# optional: start a new branch for changes we do next
+git commit -m "Baseline: slow working voice + 3D avatar (2025-08-11 08:25)"
+#git reset --hard baseline-working

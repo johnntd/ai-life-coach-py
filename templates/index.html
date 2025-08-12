@@ -16,9 +16,9 @@
       --border:#202a56;
     }
     *{box-sizing:border-box}
-    html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif}
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
 
-    /* Layout: avatar fills screen, controls dock at the bottom (kid-first UX) */
+    /* Kid-first layout: avatar fills screen; controls dock at bottom */
     .wrap{
       display:grid;
       grid-template-rows: 1fr auto;
@@ -27,57 +27,41 @@
     }
 
     /* Avatar area */
-    #avatarWrap{
-      position:relative;
-      background: radial-gradient(1200px 800px at 40% 30%, #1a2250, #0a0f2a);
-      overflow:hidden;
-    }
-    #avatarCanvas{
-      position:absolute; inset:0;
-      width:100%; height:100%;
-      display:block;
-    }
+    #avatarWrap{ position:relative; background: radial-gradient(1200px 800px at 40% 30%, #1a2250, #0a0f2a); overflow:hidden; }
+    #avatarCanvas{ position:absolute; inset:0; width:100%; height:100%; display:block; }
 
-    /* Legacy CSS hook (kept for backwards compatibility) */
+    /* Legacy CSS speaking flag (preserved) */
     #avatar.talking::after{
-      content:"Speaking…";
-      position:absolute; right:10px; bottom:10px;
-      background:#0009; color:#fff; padding:6px 8px;
-      border-radius:8px; font-size:12px;
+      content:"Speaking…"; position:absolute; right:10px; bottom:10px;
+      background:#0009; color:#fff; padding:6px 8px; border-radius:8px; font-size:12px;
     }
     #avatar{ position:absolute; inset:0; pointer-events:none; }
 
-    /* Controls panel at bottom */
+    /* Controls */
     #controlPanel{
       background:var(--panel);
       border-top:1px solid var(--border);
-      display:flex; flex-direction:column;
-      padding:14px;
+      display:flex; flex-direction:column; padding:14px;
     }
     #statusRow{display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; gap:8px;}
     #status{font-weight:600; opacity:.9}
     #model{opacity:.7}
-
     #log{
-      flex:1; min-height:140px; max-height:28vh;
-      overflow:auto;
+      flex:1; min-height:140px; max-height:28vh; overflow:auto;
       background:#0b1231; border:1px solid #283056; border-radius:12px; padding:10px;
     }
     .bubble{padding:8px 10px; margin:6px 0; border-radius:10px; max-width:100%;}
     .bubble.you{background:#17204a;}
     .bubble.coach{background:#1c2556;}
-
     .row{display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px;}
     .row input[type="text"], .row input[type="number"], .row select{
       background:#0f1430; color:var(--text); border:1px solid #283056; border-radius:8px; padding:8px 10px;
     }
-    .row button{
-      background:var(--accent); color:#fff; border:0; border-radius:10px; padding:9px 12px; cursor:pointer;
-    }
+    .row button{ background:var(--accent); color:#fff; border:0; border-radius:10px; padding:9px 12px; cursor:pointer; }
     .row button[disabled]{opacity:.5; cursor:not-allowed;}
   </style>
 
-  <!-- Import map so the jsm files can resolve the bare specifier "three" -->
+  <!-- Import map so the ES-module loaders can resolve "three" locally (no CORS) -->
   <script type="importmap">
   {
     "imports": {
@@ -127,31 +111,27 @@
         <button id="stop" disabled>Stop</button>
       </div>
 
-      <!-- TTS audio (the sound we analyse for lip-sync) -->
+      <!-- TTS audio (what we also analyze for lip-sync) -->
       <audio id="ttsAudio" preload="auto"></audio>
     </aside>
   </div>
 
-  <!-- Three.js modules (now resolved via import map) -->
+  <!-- Three.js avatar viewer + lip-sync (kept stable) -->
   <script type="module">
     import * as THREE from 'three';
     import { GLTFLoader }    from 'three/addons/loaders/GLTFLoader.js';
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-    // -----------------------------------------------------------------------
-    // Minimal avatar viewer + lip-sync (preserves IDs & previous behavior)
-    // -----------------------------------------------------------------------
     const canvas  = document.getElementById('avatarCanvas');
     const audioEl = document.getElementById('ttsAudio');
 
-    // Three basics
     const scene = new THREE.Scene();
     scene.background = null;
 
     const renderer = new THREE.WebGLRenderer({ canvas, antialias:true, alpha:true });
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 
-    // Camera: shoulders-up
+    // Shoulders-up framing
     const camera = new THREE.PerspectiveCamera(22, 1, 0.1, 100);
     camera.position.set(0, 1.52, 1.25);
     scene.add(camera);
@@ -181,7 +161,6 @@
       scene.add(rim);
     }
 
-    // Resize handling
     function onResize(){
       const rect = canvas.getBoundingClientRect();
       const w = rect.width  || canvas.clientWidth  || window.innerWidth;
@@ -194,63 +173,46 @@
 
     // Load model
     const loader = new GLTFLoader();
-    let avatarRoot = null;
-    let headMesh   = null;
-    let mouthIndex = -1;
-    let headBone   = null;
-    let jawBone    = null;
-    let eyeL = null, eyeR = null;
+    let headMesh=null, mouthIndex=-1, headBone=null, jawBone=null, eyeL=null, eyeR=null;
 
-    loader.load(
-      '/static/models/coach.glb',
-      (gltf)=>{
-        avatarRoot = gltf.scene;
-        avatarRoot.traverse(obj=>{
-          if (obj.isMesh) obj.frustumCulled = false;
-          if (!headMesh && obj.isMesh && obj.morphTargetDictionary && /Head/i.test(obj.name)) headMesh = obj;
-          if (!headBone && /Head\b/i.test(obj.name)) headBone = obj;
-          if (!jawBone  && /\bJaw\b/i.test(obj.name)) jawBone  = obj;
-          if (!eyeL     && /LeftEye/i.test(obj.name)) eyeL     = obj;
-          if (!eyeR     && /RightEye/i.test(obj.name)) eyeR    = obj;
-        });
-        scene.add(avatarRoot);
+    loader.load('/static/models/coach.glb', (gltf)=>{
+      const root = gltf.scene;
+      root.traverse(obj=>{
+        if (obj.isMesh) obj.frustumCulled = false;
+        if (!headMesh && obj.isMesh && obj.morphTargetDictionary && /Head/i.test(obj.name)) headMesh = obj;
+        if (!headBone && /Head\b/i.test(obj.name)) headBone = obj;
+        if (!jawBone  && /jaw/i.test(obj.name))   jawBone  = obj; // broader match
+        if (!eyeL     && /LeftEye/i.test(obj.name)) eyeL   = obj;
+        if (!eyeR     && /RightEye/i.test(obj.name)) eyeR  = obj;
+      });
+      scene.add(root);
 
-        if (headMesh && headMesh.morphTargetDictionary){
-          const dict = headMesh.morphTargetDictionary;
-          mouthIndex =
-            dict['mouthOpen'] ?? dict['MouthOpen'] ??
-            dict['jawOpen']   ?? dict['JawOpen']   ?? -1;
-        }
+      if (headMesh && headMesh.morphTargetDictionary){
+        const d = headMesh.morphTargetDictionary;
+        mouthIndex = d.mouthOpen ?? d.MouthOpen ?? d.jawOpen ?? d.JawOpen ?? -1;
+      }
 
-        controls.target.set(0, 1.52, 0);
-        camera.position.set(0, 1.52, 1.25);
-        camera.lookAt(controls.target);
+      controls.target.set(0, 1.52, 0);
+      camera.position.set(0, 1.52, 1.25);
+      camera.lookAt(controls.target);
 
-        console.log('[avatar] mouth morph:', mouthIndex >= 0 ? 'mouthOpen' : '(none)');
-        console.log('[avatar] jaw bone:',   jawBone ? jawBone.name : '(none)');
-        console.log('[avatar] head bone:',  headBone ? headBone.name : '(none)');
+      console.log('[avatar] mouth morph:', mouthIndex>=0?'mouthOpen':'(none)');
+      console.log('[avatar] jaw bone:',   jawBone?jawBone.name:'(none)');
+      console.log('[avatar] head bone:',  headBone?headBone.name:'(none)');
 
-        onResize();
-        animate();
-      },
-      undefined,
-      (err)=> console.error('[avatar] load error', err)
-    );
+      onResize();
+      animate();
+    }, undefined, (e)=>console.error('[avatar] load error', e));
 
-    // ----------------------- Lip-sync wiring -------------------------------
-    // If we use createMediaElementSource(audioEl), we must also connect it
-    // to ctx.destination or there will be NO SOUND.
-    let ctx = null, analyser = null, srcNode = null;
-    let wired = false, usedCapture = false;
-
+    // Lip-sync
+    let ctx=null, analyser=null, srcNode=null, wired=false, usedCapture=false;
     async function wireLipSyncOnce(){
-      if (wired) return;
-      wired = true;
+      if (wired) return; wired=true;
       try{
-        ctx = new (window.AudioContext || window.webkitAudioContext)();
+        ctx = new (window.AudioContext||window.webkitAudioContext)();
         await ctx.resume();
 
-        if (audioEl.captureStream) {
+        if (audioEl.captureStream){
           const stream = audioEl.captureStream();
           if (stream && stream.getAudioTracks().length){
             srcNode = ctx.createMediaStreamSource(stream);
@@ -265,84 +227,55 @@
 
         analyser = ctx.createAnalyser();
         analyser.fftSize = 1024;
-
         srcNode.connect(analyser);
-        if (!usedCapture) srcNode.connect(ctx.destination); // <- sound output
+        if (!usedCapture) srcNode.connect(ctx.destination); // ensure sound output
       }catch(e){
-        wired = false;
+        wired=false;
         console.warn('[avatar] audio graph create failed', e);
       }
     }
     audioEl.addEventListener('play', wireLipSyncOnce, { once:true });
 
-    // --------------------- Mouth & micro-gaze updates ----------------------
-    let mouth = 0, nf = 0.004, gain = 6.0, lastCal = 0;
-
+    // Mouth + subtle head motion
+    let mouth=0, nf=0.004, gain=6.0, lastCal=0, gazeT=0, gx=0, gy=0;
     function updateMouth(){
-      if (!analyser || !headMesh || mouthIndex < 0) return;
-
+      if (!analyser || !headMesh || mouthIndex<0) return;
       const buf = new Uint8Array(analyser.fftSize);
       analyser.getByteTimeDomainData(buf);
-      let sum = 0;
-      for (let i=0;i<buf.length;i++){
-        const v = (buf[i]-128)/128;
-        sum += v*v;
-      }
-      const rms = Math.sqrt(sum / buf.length);
+      let s=0; for (let i=0;i<buf.length;i++){ const v=(buf[i]-128)/128; s+=v*v; }
+      const rms = Math.sqrt(s/buf.length);
 
       const t = performance.now();
-      if (t - lastCal > 2000){
-        nf = Math.max(0.0025, Math.min(0.02, 0.8*nf + 0.2*rms));
-        lastCal = t;
-      }
+      if (t-lastCal>2000){ nf = Math.max(0.0025, Math.min(0.02, 0.8*nf+0.2*rms)); lastCal=t; }
 
-      let target = (rms - nf) * gain;
-      if (target < 0) target = 0;
-      if (target > 1) target = 1;
+      let target = (rms-nf)*gain; target = Math.max(0, Math.min(1, target));
+      const a = target>mouth ? 0.45 : 0.25;
+      mouth += (target-mouth)*a;
 
-      const alpha = target > mouth ? 0.45 : 0.25; // faster open, slower close
-      mouth += (target - mouth) * alpha;
-
-      headMesh.morphTargetInfluences[mouthIndex] = mouth;
-
-      if (jawBone){
-        const maxJaw = 0.20;
-        jawBone.rotation.x = mouth * maxJaw;
-      }
+      headMesh.morphTargetInfluences[mouthIndex]=mouth;
+      if (jawBone){ jawBone.rotation.x = mouth*0.20; }
     }
-
-    let gazeTimer = 0, gx = 0, gy = 0;
     function updateGaze(dt){
-      gazeTimer -= dt;
-      if (gazeTimer <= 0){
-        gazeTimer = 0.7 + Math.random()*0.9;
-        gx = (Math.random()*2-1) * 0.06;
-        gy = (Math.random()*2-1) * 0.04;
-      }
+      gazeT -= dt;
+      if (gazeT<=0){ gazeT=0.7+Math.random()*0.9; gx=(Math.random()*2-1)*0.06; gy=(Math.random()*2-1)*0.04; }
       if (headBone){
-        headBone.rotation.y += (gx - headBone.rotation.y) * 0.08;
-        headBone.rotation.x += (gy - headBone.rotation.x) * 0.08;
+        headBone.rotation.y += (gx - headBone.rotation.y)*0.08;
+        headBone.rotation.x += (gy - headBone.rotation.x)*0.08;
       }
     }
 
-    // Render loop
-    let last = performance.now();
+    let last=performance.now();
     function animate(){
       requestAnimationFrame(animate);
-      const now = performance.now();
-      const dt = (now - last)/1000;
-      last = now;
-
-      updateMouth();
-      updateGaze(dt);
-
+      const now=performance.now(); const dt=(now-last)/1000; last=now;
+      updateMouth(); updateGaze(dt);
       renderer.render(scene, camera);
     }
 
     onResize();
   </script>
 
-  <!-- Your existing app logic (IDs/handlers preserved) -->
-  <script src="/static/app.js?v=esm-importmap"></script>
+  <!-- App logic (speech, STT, TTS, chat) -->
+  <script src="/static/app.js?v=latency-baseline"></script>
 </body>
 </html>
