@@ -1,283 +1,311 @@
+# server/main.py
+# --------------------------------------------------------------------------------------
+# FastAPI backend for AI Life Coach
+# - Keeps existing routes: GET /  , POST /chat  , POST /tts
+# - Age-agnostic Miss Sunny prompt (all ages)
+# - TTS endpoint is now SDK-version-agnostic and falls back to raw HTTP
+# --------------------------------------------------------------------------------------
+
+from __future__ import annotations
+
 import os
-import re
-import io
-import time
-import json
-import tempfile
-import logging
 from typing import List, Optional
 
-from dotenv import load_dotenv
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+import httpx
+from fastapi import FastAPI, Request, Body, HTTPException
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-
 from openai import OpenAI
 
-# ------------------------------------------------------------------------------
-# Boot
-# ------------------------------------------------------------------------------
-load_dotenv()
-
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("server.main")
+# --------------------------------------------------------------------------------------
+# Config
+# --------------------------------------------------------------------------------------
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+if not OPENAI_API_KEY:
+    raise RuntimeError("OPENAI_API_KEY is not set")
+
 PRIMARY_MODEL = os.getenv("PRIMARY_MODEL", "gpt-5")
 FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "gpt-4o")
 TTS_MODEL = os.getenv("TTS_MODEL", "gpt-4o-mini-tts")
-TRANSCRIBE_MODEL = os.getenv("TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe")
-TTS_VOICE = os.getenv("TTS_VOICE", "alloy")
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*")
-
-if not OPENAI_API_KEY:
-    log.warning("OPENAI_API_KEY is missing")
+TTS_VOICE_DEFAULT = os.getenv("TTS_VOICE", "alloy")
+TTS_FORMAT_DEFAULT = "mp3"
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 app = FastAPI()
 
-# Static files (unchanged: keep your /static dir as-is)
+# Static + templates
 app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
 
-# CORS (keep your previous behavior)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[o.strip() for o in ALLOWED_ORIGINS.split(",")] if ALLOWED_ORIGINS else ["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
-# ------------------------------------------------------------------------------
-# Models / Schemas (preserve IDs/fields used by app.js)
-# ------------------------------------------------------------------------------
+# --------------------------------------------------------------------------------------
+# Prompt builder: age-agnostic
+# --------------------------------------------------------------------------------------
 
-class HistoryItem(BaseModel):
-    sender: str
-    text: str
+def build_system_prompt(
+    name: str,
+    age: Optional[int],
+    teen_mode: bool,
+    objective: str = "assessment",
+) -> str:
+    who = name.strip() if name else "friend"
+    a = age if (isinstance(age, int) and age > 0) else None
 
-class ChatReq(BaseModel):
-    user_text: Optional[str] = ""
-    include_seed: Optional[bool] = False
-    name: Optional[str] = "Emily"
-    age: Optional[int] = 5
-    mode: Optional[str] = "child"  # "child" or "teen"
-    objective: Optional[str] = "gentle warm-up"
-    history: Optional[List[HistoryItem]] = []
-    lang: Optional[str] = "en-US"
+    is_child = a is not None and a < 13
+    is_teen = a is not None and 13 <= a < 18
+    is_adult = a is None or a >= 18  # default adult-friendly if unknown
 
-class ChatRes(BaseModel):
-    reply: str
-    model_used: str
+    if is_child:
+        tone = (
+            "Use warm, playful language, very short sentences, and gentle pacing. "
+            "Avoid complex vocabulary; define new words simply."
+        )
+        focus = (
+            "Focus on: reading (phonics or sight words), writing letters/words, "
+            "numbers and simple math, logic puzzles, early science ideas, social skills, "
+            "and basic general knowledge."
+        )
+    elif is_teen or teen_mode:
+        tone = (
+            "Be friendly, encouraging, and concise. One actionable question at a time. "
+            "No baby talk."
+        )
+        focus = (
+            "Focus on: reading/writing clarity, math appropriate to level, logic & problem "
+            "solving, science fundamentals, social/communication skills, and general knowledge."
+        )
+    else:
+        tone = (
+            "Be respectful, supportive, and efficient. One concise question at a time. "
+            "Avoid condescension."
+        )
+        focus = (
+            "Focus on: everyday literacy & numeracy, reasoning, practical general knowledge "
+            "(health & safety basics), light digital/financial literacy as appropriate, "
+            "and a quick goals/wellbeing check-in."
+        )
 
-class TTSReq(BaseModel):
-    text: str
-    voice: Optional[str] = None
-    model: Optional[str] = None  # kept for compatibility with older app.js
-
-# ------------------------------------------------------------------------------
-# Helpers
-# ------------------------------------------------------------------------------
-
-def system_prompt_for_miss_sunny(req: ChatReq) -> str:
-    """
-    Keep your master prompt, trimmed for latency; no [[CUE_...]] in audio.
-    Bilingual behavior guided by 'lang' and mode.
-    """
-    # Short, clean, and deterministic prompt for your flow
-    mode_line = "Child / Teen Coaching" if req.mode in ("child", "teen") else "Adult Coaching"
-    lang_target = "Vietnamese" if req.lang.startswith("vi") else "English"
-    other_lang = "English" if lang_target == "Vietnamese" else "Vietnamese"
-
-    return (
-        "Role: You are Miss Sunny, a warm, patient, bilingual AI life coach and language teacher.\n"
-        "Constraints:\n"
-        f"- Speak mainly in {lang_target}; briefly explain tricky points in {other_lang}.\n"
-        "- Keep turns short and interactive; end with exactly one simple question.\n"
-        "- No bracketed cues like [[CUE_*]] in your text.\n"
-        f"Mode: {mode_line}.  Keep it cheerful and age-appropriate.\n"
-        "Goal: Help the learner via a fun, spoken assessment and adaptive coaching.\n"
-        "If first turn (no user text), start with a friendly greeting, ask for name and age.\n"
+    opener = (
+        "Start with a brief hello as Miss Sunny. If you do not know the learner's name or age, "
+        "politely ask for them. Then proceed with an age-appropriate quick assessment."
     )
 
-def sanitize_reply(text: str) -> str:
-    # Strip [[CUE_...]] safely, just in case
-    text = re.sub(r"\[\[.*?\]\]", "", text or "").strip()
-    # Collapse excessive whitespace
-    text = re.sub(r"\s+\n", "\n", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text
+    output_rules = (
+        "Speak in short, easy-to-hear lines. Ask exactly one question at a time. "
+        "After each short section, briefly reflect on how they did and what to try next. "
+        "If they seem unsure or silent, offer a simpler option or a fun alternative."
+    )
 
-def _chat(model: str, messages: List[dict], temperature: Optional[float] = None, max_tokens: Optional[int] = None):
-    """
-    Synchronous call to Chat Completions (SDK 1.x is sync for the default client).
-    We avoid unsupported params on GPT-5 variants.
-    """
-    kwargs = {"model": model, "messages": messages}
+    objective_text = (
+        "Objective: run a short, age-appropriate checkup and keep it fun. "
+        "End with one personalized suggestion or activity."
+    )
 
-    # Some models (e.g., certain gpt-5 variants) accept only default temperature.
-    if temperature is not None and not model.startswith("gpt-5"):
-        kwargs["temperature"] = temperature
+    return f"""
+You are Miss Sunny, a friendly, encouraging learning coach for all ages.
+Learner: "{who}" • Age: {a if a is not None else "unknown"} • Mode teen={teen_mode}
 
-    # Some models expect 'max_completion_tokens' instead of 'max_tokens'.
-    if max_tokens is not None:
-        if model.startswith("gpt-5"):
-            kwargs["max_completion_tokens"] = max_tokens
-        else:
-            kwargs["max_tokens"] = max_tokens
+{opener}
 
-    return client.chat.completions.create(**kwargs)
+Style & Tone:
+- {tone}
 
-def _try_models(messages: List[dict]) -> ChatRes:
-    """
-    Try PRIMARY_MODEL first; if it returns an empty/invalid reply or errors, fallback.
-    """
-    used = None
-    text = ""
+What to assess (adapt depth to the learner):
+- {focus}
 
-    try:
-        log.info(f"[router] calling model={PRIMARY_MODEL}")
-        r = _chat(PRIMARY_MODEL, messages, temperature=None, max_tokens=320)
-        used = PRIMARY_MODEL
-        text = (r.choices[0].message.content or "").strip()
-        if not text:
-            log.info("Primary failed: Empty reply from primary")
-            used = None
-    except Exception as e:
-        log.info(f"[router] primary failed; trying fallback")
-        used = None
+Response Rules:
+- {output_rules}
+- Keep turns short so speech works well.
+- Never criticize; always encourage.
+- If asked to switch topics or pace, happily adapt.
 
-    if used is None:
-        try:
-            log.info(f"[router] calling model={FALLBACK_MODEL}")
-            r = _chat(FALLBACK_MODEL, messages, temperature=0.8, max_tokens=320)
-            used = FALLBACK_MODEL
-            text = (r.choices[0].message.content or "").strip()
-        except Exception as e:
-            log.exception("Both models failed")
-            raise
+{objective_text}
+""".strip()
 
-    return ChatRes(reply=sanitize_reply(text), model_used=used)
 
-# ------------------------------------------------------------------------------
+# --------------------------------------------------------------------------------------
+# Models
+# --------------------------------------------------------------------------------------
+
+class HistoryItem(BaseModel):
+    sender: str  # "you" | "coach"
+    text: str
+
+
+class ChatPayload(BaseModel):
+    user_text: str = ""
+    include_seed: bool = False
+    name: Optional[str] = None
+    age: Optional[int] = None
+    mode: str = "child"  # "child" | "teen"
+    objective: Optional[str] = "assessment"
+    history: List[HistoryItem] = []
+
+
+# --------------------------------------------------------------------------------------
 # Routes
-# ------------------------------------------------------------------------------
+# --------------------------------------------------------------------------------------
 
 @app.get("/")
-def index():
-    """
-    Keep serving your existing templates/index.html (you mentioned templates earlier).
-    If your index.html is elsewhere, update the path below.
-    """
-    path = os.path.join("templates", "index.html")
-    return FileResponse(path)
+async def index(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
+
+
+def _chat(model: str, messages: List[dict], temperature: Optional[float] = None, max_tokens: int = 320):
+    kwargs = dict(model=model, messages=messages, max_tokens=max_tokens)
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    return client.chat.completions.create(**kwargs)
+
+
+def _try_models(messages: List[dict]):
+    try:
+        r = _chat(PRIMARY_MODEL, messages, temperature=None, max_tokens=320)
+        return r, PRIMARY_MODEL
+    except Exception:
+        print("INFO:server.main:[router] primary failed; trying fallback")
+        r = _chat(FALLBACK_MODEL, messages, temperature=0.8, max_tokens=320)
+        return r, FALLBACK_MODEL
+
 
 @app.post("/chat")
-async def chat(req: ChatReq):
+async def chat(payload: ChatPayload):
+    name = payload.name or ""
+    age = payload.age if payload.age is not None else None
+    teen_mode = bool(payload.mode == "teen")
+
+    system_prompt = build_system_prompt(
+        name=name, age=age, teen_mode=teen_mode, objective=payload.objective or "assessment"
+    )
+
+    messages: List[dict] = [{"role": "system", "content": system_prompt}]
+
+    for h in payload.history or []:
+        role = "assistant" if h.sender == "coach" else "user"
+        if h.text:
+            messages.append({"role": role, "content": h.text})
+
+    if payload.include_seed:
+        seed = (
+            "Hi there! I’m Miss Sunny. What’s your name and how old are you? "
+            "We’ll do a fun quick check-up together."
+        )
+        messages.append({"role": "assistant", "content": seed})
+
+    if (payload.user_text or "").strip():
+        messages.append({"role": "user", "content": payload.user_text.strip()})
+
+    r, used_model = _try_models(messages)
+    reply = (r.choices[0].message.content or "").strip()
+    return {"reply": reply, "model_used": used_model}
+
+
+# ----- TTS ---------------------------------------------------------------------------
+
+class TtsIn(BaseModel):
+    text: str
+    voice: Optional[str] = None
+    format: Optional[str] = TTS_FORMAT_DEFAULT
+
+
+def _tts_via_sdk(text: str, voice: str, fmt: str) -> Optional[bytes]:
     """
-    Build messages with a tight system prompt + short context from the last few history items.
+    Try different SDK signatures so we work across versions.
+    Returns bytes or None if not available.
     """
-    # System prompt
-    sys = system_prompt_for_miss_sunny(req)
-
-    # A tiny rolling memory from the client history (kept short for latency)
-    ctx: List[dict] = []
-    for h in (req.history or [])[-6:]:
-        role = "user" if (h.sender or "").lower() == "you" else "assistant"
-        ctx.append({"role": role, "content": h.text or ""})
-
-    # First-turn seed vs user text
-    if req.include_seed and not (req.user_text or "").strip():
-        user_line = ""  # Miss Sunny will start (greeting + name/age ask)
-    else:
-        user_line = req.user_text or ""
-
-    messages = [{"role": "system", "content": sys}]
-    if ctx:
-        messages.extend(ctx)
-    if user_line:
-        messages.append({"role": "user", "content": user_line})
-
+    # Signature 1: format=
     try:
-        res = _try_models(messages)
-        return JSONResponse(content={"reply": res.reply, "model_used": res.model_used})
-    except Exception as e:
-        log.exception("chat failed")
-        return JSONResponse(status_code=500, content={"error": "chat_failed"})
-
-@app.post("/tts")
-async def tts(req: TTSReq):
-    """
-    TTS endpoint (fixed for OpenAI Python >= 1.40):
-    - DO NOT pass `format=`.
-    - Use streaming API and return `audio/mpeg`.
-    - We strip any [[CUE_...]] just to be safe.
-    """
-    text = sanitize_reply(req.text or "")
-    voice = (req.voice or TTS_VOICE) or "alloy"
-    model = (req.model or TTS_MODEL) or "gpt-4o-mini-tts"
-
-    try:
-        # Stream to a temporary MP3 and send it back
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
-            tmp_path = tmp.name
-
-        # This is the supported pattern in the new SDK
-        with client.audio.speech.with_streaming_response.create(
-            model=model,
+        res = client.audio.speech.create(
+            model=TTS_MODEL,
             voice=voice,
             input=text,
-        ) as resp:
-            resp.stream_to_file(tmp_path)
-
-        # Return the MP3 bytes
-        return FileResponse(tmp_path, media_type="audio/mpeg", filename="speech.mp3")
-    except TypeError as te:
-        # This is what you were seeing: unexpected keyword arg 'format'
-        log.error(f"TTS failed: {te}")
-        return JSONResponse(status_code=200, content={"error": "tts_failed"})
+            format=fmt,
+        )
+        audio_bytes = getattr(res, "content", None)
+        if audio_bytes:
+            return audio_bytes
     except Exception as e:
-        log.exception("TTS failed")
-        return JSONResponse(status_code=200, content={"error": "tts_failed"})
+        print(f"INFO:server.main:TTS via SDK (format=) failed: {e!r}")
 
-@app.post("/stt")
-async def stt(request: Request):
-    """
-    Server-side transcription for MediaRecorder chunks (audio/webm).
-    We write bytes to a temp .webm and pass a file handle to the SDK
-    (most reliable across versions).
-    """
+    # Signature 2: response_format=
     try:
-        data = await request.body()
-        if not data:
-            return JSONResponse(status_code=400, content={"error": "empty_audio"})
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tmp:
-            tmp.write(data)
-            tmp_path = tmp.name
-
-        text_out = ""
-        # Open and transcribe (synchronous call on the default client)
-        with open(tmp_path, "rb") as f:
-            tr = client.audio.transcriptions.create(
-                model=TRANSCRIBE_MODEL,
-                file=f,
-            )
-            # New SDK returns an object with 'text'
-            text_out = (tr.text or "").strip()
-
-        return JSONResponse(content={"text": text_out})
+        res = client.audio.speech.create(
+            model=TTS_MODEL,
+            voice=voice,
+            input=text,
+            response_format=fmt,
+        )
+        audio_bytes = getattr(res, "content", None)
+        if audio_bytes:
+            return audio_bytes
     except Exception as e:
-        log.exception("STT failed")
-        return JSONResponse(status_code=500, content={"error": "stt_failed"})
+        print(f"INFO:server.main:TTS via SDK (response_format=) failed: {e!r}")
 
-# ------------------------------------------------------------------------------
-# Health
-# ------------------------------------------------------------------------------
+    return None
 
-@app.get("/healthz")
-def healthz():
-    return {"ok": True}
+
+def _tts_via_http(text: str, voice: str, fmt: str) -> Optional[bytes]:
+    """
+    Raw HTTP fallback to /v1/audio/speech.
+    Tries both 'format' and 'response_format'.
+    """
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    url = "https://api.openai.com/v1/audio/speech"
+
+    # Attempt A: format
+    try:
+        payload = {"model": TTS_MODEL, "voice": voice, "input": text, "format": fmt}
+        with httpx.Client(timeout=30) as s:
+            r = s.post(url, headers=headers, json=payload)
+            if r.status_code == 200 and r.content:
+                return bytes(r.content)
+            print(f"INFO:server.main:TTS HTTP(format) status={r.status_code} body={r.text[:200]!r}")
+    except Exception as e:
+        print(f"INFO:server.main:TTS HTTP(format) failed: {e!r}")
+
+    # Attempt B: response_format
+    try:
+        payload = {"model": TTS_MODEL, "voice": voice, "input": text, "response_format": fmt}
+        with httpx.Client(timeout=30) as s:
+            r = s.post(url, headers=headers, json=payload)
+            if r.status_code == 200 and r.content:
+                return bytes(r.content)
+            print(f"INFO:server.main:TTS HTTP(response_format) status={r.status_code} body={r.text[:200]!r}")
+    except Exception as e:
+        print(f"INFO:server.main:TTS HTTP(response_format) failed: {e!r}")
+
+    return None
+
+
+@app.post("/tts")
+async def tts(data: TtsIn = Body(...)):
+    """
+    TTS endpoint — contract unchanged.
+    Returns 400 on empty text and 502 on generation failure,
+    so the frontend never tries to play a zero-byte blob.
+    """
+    text = (data.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Empty text for TTS")
+
+    voice = data.voice or TTS_VOICE_DEFAULT
+    fmt = (data.format or TTS_FORMAT_DEFAULT).lower()
+
+    # Try SDK first, then raw HTTP as fallback
+    audio_bytes = _tts_via_sdk(text, voice, fmt)
+    if audio_bytes is None:
+        audio_bytes = _tts_via_http(text, voice, fmt)
+
+    if not audio_bytes:
+        print("ERROR:server.main:TTS failed after all strategies")
+        raise HTTPException(status_code=502, detail="TTS generation failed")
+
+    # mp3 / mpeg — the browser will play fine
+    return Response(content=audio_bytes, media_type="audio/mpeg")
