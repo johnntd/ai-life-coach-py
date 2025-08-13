@@ -155,6 +155,7 @@ let srStarting      = false;   // between .start() and onstart
 let srStartTimer    = null;    // debouncer
 let srKeepAlive     = null;    // interval id
 let srLastHeardAt   = 0;
+let currentLang     = langEl.value || "en-US"; // initialize with dropdown default
 
 // Safer echo-guard: only drop if the user text is long enough and
 // mostly a substring of the coach line (prevents filtering short answers).
@@ -206,8 +207,8 @@ function realStartSR(){
   // Hard reset any stale recognizer (abort won't throw if already ended)
   try { recognizer && recognizer.abort(); } catch {}
   recognizer = new SRCls();
-
-  recognizer.lang = (langEl?.value || "en-US");
+  recognizer.lang = currentLang;
+  voice: voiceForLang(currentLang);
   recognizer.continuous = true;             // keep continuous, but cycle after result
   recognizer.interimResults = false;
   recognizer.maxAlternatives = 1;
