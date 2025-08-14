@@ -1,0 +1,11 @@
+title = "Project gitleaks allowlist"
+
+# CHANGE: allowlist only the known public Firebase Web API key found in static/app.js.
+# We avoid a broad regex for all 'AIza...' keys to prevent masking real Google creds elsewhere.
+[allowlist]
+regexes = [
+  '''AIzaSyAJqZ04ON-lsX2_08ET6CMUAZzxvbHsUpc'''
+]
+
+# (Optional) if you ever change the Firebase key, update the value above.
+# Do NOT add your OpenAI key here. Keep that in .env and out of git history.
