@@ -27,7 +27,7 @@ const firebaseConfig = {
   apiKey: "AIzaSyAJqZ04ON-lsX2_08ET6CMUAZzxvbHsUpc",
   authDomain: "ai-life-coach-694f9.firebaseapp.com",
   projectId: "ai-life-coach-694f9",
-  storageBucket: "ai-life-coach-694f9.appspot.com",
+  storageBucket: "ai-life-coach-694f9.firebasestorage.app", // CHANGE: align with Collaboration Master Prompt (was appspot.com)
   messagingSenderId: "328321656985",
   appId: "1:328321656985:web:041c0d8585741cdcbdb008",
   measurementId: "G-K75Q06YF6X"
@@ -82,30 +82,29 @@ const audioEl      = $("#ttsAudio");
 const authStatusEl = document.getElementById("authStatus");
 
 // ---------- Config (kept from your baseline; only COOLDOWN_TTS tuned earlier) ----------
-// CHANGE: Replace with authoritative latency policy
 const CONFIG = {
-  SILENCE_HOLD : 350,   // CHANGE: was 500
+  SILENCE_HOLD : 350,
   MAX_UTT      : 5000,
   MIN_TALK     : 300,
-  TIMESLICE    : 200,   // CHANGE: was 80
-  COOLDOWN_TTS : 650    // CHANGE: was 600
+  TIMESLICE    : 200,
+  COOLDOWN_TTS : 650
 };
 
 // ---------- State ----------
-let currentUid      = null;
-let listening = false;     // session running
-let talking   = false;     // TTS speaking
-let cooldown  = false;     // short guard after TTS
-let history   = [];        // {sender: "you"|"coach", text}
-let lastCoach = "";
-let running   = false;     // mirrors listening
+let currentUid = null;
+let listening  = false;   // session running
+let talking    = false;   // TTS speaking
+let cooldown   = false;   // short guard after TTS
+let history    = [];      // {sender: "you"|"coach", text}
+let lastCoach  = "";
+let running    = false;   // mirrors listening
 let currentLang = (langEl?.value || "en-US"); // initialize with dropdown/default
 
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
 
-// [ADD] Proactive follow-up (silence watchdog) — GLOBAL so all handlers can use it
+// [ADD] Proactive follow-up (silence watchdog)
 let silenceTimer = null;
-const SILENCE_MS = 7000; // 7s is kid-friendly; tweak as you like
+const SILENCE_MS = 7000;
 function clearSilenceTimer() {
   if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
 }
@@ -113,19 +112,16 @@ async function startSilenceTimer() {
   clearSilenceTimer();
   silenceTimer = setTimeout(async () => {
     try {
-      // Only nudge if we’re in-session and not currently speaking
       if (!listening || talking) return;
-
-      // Use the same callChat() so profile/age/mode are consistent
-      const data = await callChat({ user_text: "", include_seed: false, no_reply: true }); // [ADD no_reply]
+      const data = await callChat({ user_text: "", include_seed: false, no_reply: true });
       const reply = (data.reply ?? data.text ?? "").trim();
       if (reply) {
         appendBubble("coach", reply);
         history.push({ sender: "coach", text: reply });
         lastCoach = reply;
-        await speakInChunks(reply); // CHANGE: use chunked speech
-        ensureSRStart(40);   // restart listening after coach speaks
-        startSilenceTimer(); // re-arm in case of continued silence
+        await speakInChunks(reply);
+        ensureSRStart(40);
+        startSilenceTimer();
       }
     } catch (err) {
       console.warn("[silence] follow-up failed", err);
@@ -134,8 +130,6 @@ async function startSilenceTimer() {
 }
 
 // ---------- Helpers ----------
-
-// ADDED: quick utility to test computed visibility
 function isVisible(el) {
   if (!el) return false;
   const s = window.getComputedStyle(el);
@@ -150,7 +144,7 @@ function escapeHtml(s) {
 }
 
 // UPDATED: appendBubble now uses #messages if available, else falls back to #log
-function appendBubble(sender, text) { // UPDATED
+function appendBubble(sender, text) {
   const container = document.getElementById("messages") || logEl;
   const div = document.createElement("div");
   div.className = `bubble ${sender === "you" ? "you" : "coach"}`;
@@ -224,7 +218,6 @@ function dataURLToBlob(dataURL) {
 async function sendFileToAnalyze(file, userPrompt = "Please help me with this.") {
   const form = new FormData();
   form.append("file", file);
-  // pass profile basics
   const uid = auth.currentUser?.uid || "";
   const name = `${firstNameEl?.value || ""} ${lastNameEl?.value || ""}`.trim() || "Friend";
   const age  = Number(ageEl?.value || 18);
@@ -234,6 +227,7 @@ async function sendFileToAnalyze(file, userPrompt = "Please help me with this.")
   form.append("age", age);
   form.append("mode", mode);
   form.append("prompt", userPrompt);
+  form.append("lang", currentLang); // keep server in sync
 
   setStatus("Analyzing…");
   try {
@@ -244,9 +238,9 @@ async function sendFileToAnalyze(file, userPrompt = "Please help me with this.")
     appendBubble("coach", reply);
     history.push({ sender: "coach", text: reply });
     lastCoach = reply;
-    await speakInChunks(reply); // CHANGE: chunked speech
+    await speakInChunks(reply);
     setStatus("Listening…");
-    startSilenceTimer(); // [ADD] re-arm after coach speaks
+    startSilenceTimer();
   } catch (e) {
     console.error(e);
     appendBubble("coach", "I couldn't analyze that file right now.");
@@ -254,13 +248,11 @@ async function sendFileToAnalyze(file, userPrompt = "Please help me with this.")
   }
 }
 
-// ---------- Backend calls (unchanged contract) ----------
-async function callChat({ user_text = "", include_seed = false, no_reply = false }) { // [MODIFY] accept no_reply
+// ---------- Backend calls ----------
+async function callChat({ user_text = "", include_seed = false, no_reply = false }) {
   const user = auth.currentUser;
 
-  // Safely combine first and last name
   const name = `${firstNameEl?.value || ""} ${lastNameEl?.value || ""}`.trim() || "Emily";
-
   const age = Number(ageEl?.value || 5);
   const mode = age < 13 ? "child" : age < 18 ? "teen" : "adult";
 
@@ -273,7 +265,8 @@ async function callChat({ user_text = "", include_seed = false, no_reply = false
     mode,
     objective: "gentle warm-up assessment",
     history,
-    no_reply, // [ADD]
+    no_reply,
+    lang: currentLang // ensure server prompt + TTS match UI
   };
 
   const res = await fetch("/chat", {
@@ -287,11 +280,15 @@ async function callChat({ user_text = "", include_seed = false, no_reply = false
 }
 
 // ---------- TTS helpers ----------
-function detectVietnamese(text) {
-  return /[ạảãáàâấầẩẫậăắằẳẵặđêếềểễệôốồổỗộơớờởỡợưứừửữự]/i.test(text);
-}
+// CHANGE: widen Vietnamese detection to catch *romanized* Vietnamese too
+function detectVietnamese(text) {                                        // CHANGE
+  if (/[ạảãáàâấầẩẫậăắằẳẵặđêếềểễệôốồổỗộơớờởỡợưứừửữự]/i.test(text))  // CHANGE
+    return true;                                                         // CHANGE
+  const t = (text || "").toLowerCase();                                  // CHANGE
+  // Common romanized cues that English SR might produce before we switch:  // CHANGE
+  return /\b(xin chao|cam on|vui long|khong|duoc|anh|chi|em|toi|ban|bai|hoc|gia su|bai tap)\b/.test(t); // CHANGE
+}                                                                        // CHANGE
 
-// CHANGE: Promise-based Web Speech fallback that follows currentLang and resolves on end
 function speakWeb(text) {
   try {
     const u = new SpeechSynthesisUtterance(text);
@@ -311,7 +308,6 @@ function speakWeb(text) {
   }
 }
 
-// CHANGE: Server TTS resolves only when audio playback finishes (so we can chain chunks)
 async function speak(text) {
   const t = (text ?? "").trim();
   if (!t) {
@@ -325,7 +321,7 @@ async function speak(text) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         text: t,
-        voice: "alloy",  // Always use OpenAI Alloy
+        voice: "alloy",
         format: "mp3"
       })
     });
@@ -368,7 +364,7 @@ async function speak(text) {
   }
 }
 
-// CHANGE: Chunking helpers so no single utterance exceeds ~15s
+// Chunking helpers
 function chunkTextForTTS(text, maxChars = 220) {
   const s = (text || "").trim();
   if (!s) return [];
@@ -400,7 +396,6 @@ function chunkTextForTTS(text, maxChars = 220) {
   return chunks;
 }
 
-// CHANGE: Speak chunks sequentially (never mix languages in one utterance)
 async function speakInChunks(text) {
   const pieces = chunkTextForTTS(text);
   for (const piece of pieces) {
@@ -414,7 +409,6 @@ async function chatTurn(userText){
     setStatus("Thinking…");
     const data  = await callChat({ user_text: userText, include_seed: false });
 
-    // NOTE: server returns { reply, model_used, lang? } in your baseline
     const reply = (data.reply ?? data.text ?? "").trim();
     modelEl.textContent = `Model: ${data.model_used || data.model || "?"}`;
 
@@ -422,16 +416,16 @@ async function chatTurn(userText){
       appendBubble("coach", reply);
       history.push({ sender: "coach", text: reply });
       lastCoach = reply;
-      await speakInChunks(reply); // CHANGE: chunked speech
-      startSilenceTimer();        // [ADD] arm proactive follow-up after coach speaks
+      await speakInChunks(reply);
+      startSilenceTimer();
     } else {
       appendBubble("coach", "Sorry, I didn’t get a reply.");
     }
-    setStatus("Listening…");
+    setStatus(`Listening… (${currentLang})`); // CHANGE: show active SR language
   } catch(err){
     console.error(err);
     appendBubble("coach", "Network hiccup. Let's try again?");
-    setStatus("Listening…");
+    setStatus(`Listening… (${currentLang})`); // CHANGE
     ensureSRStart(140);
   }
 }
@@ -447,23 +441,20 @@ let srStartTimer    = null;    // debouncer
 let srKeepAlive     = null;    // interval id
 let srLastHeardAt   = 0;
 
-// Safer echo-guard: only drop if the user text is long enough and
-// mostly a substring of the coach line (prevents filtering short answers).
 function looksLikeEcho(txt, coach){
   if (!txt || !coach) return false;
   const clean = (s)=> s.toLowerCase().replace(/[^\w\s]/g," ").replace(/\s+/g," ").trim();
   const a = clean(txt);
   const b = clean(coach);
-  if (a.length < 8) return false;               // let short answers pass
+  if (a.length < 8) return false;
   if (!b.includes(a)) return false;
   const ratio = a.length / Math.max(1, b.length);
-  return ratio >= 0.35; // consider it echo only if the match is a big chunk
+  return ratio >= 0.35;
 }
 
-// Debounced request to (re)start SR. Multiple calls collapse into one.
 function ensureSRStart(delay = 100){
-  if (!SRCls) return;              // Browser not supported
-  if (!listening) return;          // only when session is on
+  if (!SRCls) return;
+  if (!listening) return;
   if (talking || cooldown) {
     if (!srStartTimer) srStartTimer = setTimeout(()=>{ srStartTimer=null; ensureSRStart(60); }, 120);
     return;
@@ -477,8 +468,6 @@ function ensureSRStart(delay = 100){
   }, Math.max(0, delay|0));
 }
 
-// Force a clean SR cycle after each final result. This avoids Chrome’s
-// “stuck continuous” issue after the first turn.
 function cycleSRSoon(ms = 50){
   if (!recognizer) return;
   if (!listening) return;
@@ -489,16 +478,14 @@ function cycleSRSoon(ms = 50){
   }, ms);
 }
 
-// The actual start logic (never call directly from outside; use ensureSRStart)
 function realStartSR(){
   if (!SRCls || !listening) return;
   if (srRunning || srStarting) return;
 
-  // Hard reset any stale recognizer (abort won't throw if already ended)
   try { recognizer && recognizer.abort(); } catch {}
   recognizer = new SRCls();
   recognizer.lang = currentLang;
-  recognizer.continuous = true;             // keep continuous, but cycle after result
+  recognizer.continuous = true;
   recognizer.interimResults = true;
   recognizer.maxAlternatives = 3;
 
@@ -506,32 +493,36 @@ function realStartSR(){
     srStarting = false;
     srRunning  = true;
     srLastHeardAt = performance.now();
-    setStatus("Listening…");
+    setStatus(`Listening… (${currentLang})`); // CHANGE: reflect SR lang
   };
   recognizer.onaudiostart = () => { srLastHeardAt = performance.now(); };
   recognizer.onaudioend   = () => { srLastHeardAt = performance.now(); };
-  recognizer.onsoundstart = () => { srLastHeardAt = performance.now(); clearSilenceTimer(); }; // [ADD]
+  recognizer.onsoundstart = () => { srLastHeardAt = performance.now(); clearSilenceTimer(); };
   recognizer.onspeechend  = () => { srLastHeardAt = performance.now(); };
 
   recognizer.onresult = async (ev) => {
     const last = ev.results?.[ev.results.length - 1];
     if (!last || !last.isFinal) return;
 
-    clearSilenceTimer(); // [ADD] user spoke → stop proactive timer
+    clearSilenceTimer();
 
     const txt = (last[0]?.transcript || "").trim();
     if (!txt) { cycleSRSoon(40); return; }
 
-    // 🔁 Auto-switch to Vietnamese if detected
-    if (detectVietnamese(txt) && currentLang !== "vi-VN") {
-      currentLang = "vi-VN";
-      try { recognizer.abort(); } catch {}
-    } else if (!detectVietnamese(txt) && currentLang !== "en-US") {
-      currentLang = "en-US";
-      try { recognizer.abort(); } catch {}
-    }
+    // CHANGE: robust auto-switch — also recognizes romanized Vietnamese
+    if (detectVietnamese(txt) && currentLang !== "vi-VN") {   // CHANGE
+      currentLang = "vi-VN";                                   // CHANGE
+      try { recognizer.abort(); } catch {}                     // CHANGE
+      return;                                                  // CHANGE
+    } else if (!detectVietnamese(txt) && currentLang !== "en-US") { // CHANGE
+      // If we captured plain ASCII and not Vietnamese cues, prefer English  // CHANGE
+      if (!/[^\x00-\x7F]/.test(txt)) {                          // CHANGE
+        currentLang = "en-US";                                   // CHANGE
+        try { recognizer.abort(); } catch {}                     // CHANGE
+        return;                                                  // CHANGE
+      }                                                          // CHANGE
+    }                                                            // CHANGE
 
-    // Echo guard vs. our own last coach line (gentler)
     if (looksLikeEcho(txt, lastCoach)) {
       srLastHeardAt = performance.now();
       cycleSRSoon(40);
@@ -544,7 +535,6 @@ function realStartSR(){
     appendBubble("you", txt);
     history.push({ sender: "you", text: txt });
 
-    // IMPORTANT: kick a cycle so we don't get stuck waiting for a new segment
     cycleSRSoon(40);
 
     await chatTurn(txt);
@@ -559,7 +549,6 @@ function realStartSR(){
       setStatus("Mic blocked — allow microphone in the browser.");
       return;
     }
-    // 'no-speech' is common after silence; restart gently
     ensureSRStart(err === "no-speech" ? 200 : 300);
   };
 
@@ -578,7 +567,6 @@ function realStartSR(){
     ensureSRStart(250);
   }
 
-  // Keep-alive: if quiet for >10s, nudge SR by aborting (onend will restart)
   clearInterval(srKeepAlive);
   srKeepAlive = setInterval(() => {
     if (!recognizer || !listening) return;
@@ -586,12 +574,9 @@ function realStartSR(){
     const idle = performance.now() - srLastHeardAt;
     if (idle > 10000) {
       try { recognizer.abort(); } catch {}
-      // onend -> ensureSRStart()
     }
   }, 3000);
 }
-
-// end of realStartSR
 
 function stopSR(){
   clearInterval(srKeepAlive);
@@ -600,16 +585,14 @@ function stopSR(){
   srStarting = false;
   try { recognizer && recognizer.abort(); } catch {}
   recognizer = null;
-  clearSilenceTimer(); // [ADD]
+  clearSilenceTimer();
 }
 
-// TTS lifecycle hooks -> coordinate with SR (don’t stack restarts)
+// TTS lifecycle hooks -> coordinate with SR
 audioEl?.addEventListener("play", () => {
-  // A definite TTS start – pause SR immediately
   stopSR();
 });
 audioEl?.addEventListener("ended", () => {
-  // After TTS tail guard, restart listening (debounced)
   ensureSRStart((CONFIG.COOLDOWN_TTS || 650) + 20);
 });
 
@@ -619,29 +602,26 @@ async function startFlow(){
   listening = true;
   running   = true;
 
-  // UPDATED: null-safe toggles
   if (startBtn) startBtn.style.display = "none";
   if (stopBtn)  stopBtn.style.display  = "inline-block";
   setStatus("Starting…");
 
   try{
-    // Seed: greet + begin assessment (server logic unchanged)
     const seed = await callChat({ include_seed: true });
-    const reply = (seed.reply ?? seed.text ?? "").trim(); // UPDATED 08/14/25
+    const reply = (seed.reply ?? seed.text ?? "").trim();
     modelEl.textContent = `Model: ${seed.model_used || seed.model || "?"}`;
 
     if (reply){
       appendBubble("coach", reply);
       history.push({ sender: "coach", text: reply });
       lastCoach = reply;
-      await speakInChunks(reply); // CHANGE: chunked speech
-      startSilenceTimer();        // [ADD] arm proactive follow-up after first seed
+      await speakInChunks(reply);
+      startSilenceTimer();
     } else {
       appendBubble("coach", "I had trouble starting. Try again?");
     }
 
-    setStatus("Listening…");
-    // Begin recognition after the first TTS completes
+    setStatus(`Listening… (${currentLang})`); // CHANGE
     ensureSRStart(20);
   }catch(e){
     console.error(e);
@@ -658,11 +638,38 @@ function stopFlow(){
   listening = false;
   running   = false;
   stopSR();
-  // UPDATED: null-safe toggles
   if (startBtn) startBtn.style.display = "inline-block";
   if (stopBtn)  stopBtn.style.display  = "none";
   setStatus("Idle");
 }
+
+// CHANGE: helper to send typed message via the Send button / Enter key
+async function sendTypedMessage(){                               // CHANGE
+  const txt = (textEl?.value || "").trim();                      // CHANGE
+  if (!txt) return;                                              // CHANGE
+
+  // CHANGE: auto-switch language on typed text as well
+  if (detectVietnamese(txt) && currentLang !== "vi-VN") {         // CHANGE
+    currentLang = "vi-VN";                                        // CHANGE
+    try { recognizer?.abort?.(); } catch {}                       // CHANGE
+  } else if (!detectVietnamese(txt) && currentLang !== "en-US") { // CHANGE
+    if (!/[^\x00-\x7F]/.test(txt)) {                              // CHANGE
+      currentLang = "en-US";                                      // CHANGE
+      try { recognizer?.abort?.(); } catch {}                     // CHANGE
+    }                                                             // CHANGE
+  }                                                               // CHANGE
+
+  appendBubble("you", txt);                                      // CHANGE
+  history.push({ sender: "you", text: txt });                    // CHANGE
+  textEl.value = "";                                             // CHANGE
+  sendBtn && (sendBtn.disabled = true);                          // CHANGE
+  try {                                                          // CHANGE
+    await chatTurn(txt);                                         // CHANGE
+  } finally {                                                    // CHANGE
+    sendBtn && (sendBtn.disabled = false);                       // CHANGE
+    textEl?.focus();                                             // CHANGE
+  }                                                              // CHANGE
+}                                                                // CHANGE
 
 // Wire buttons
 startBtn?.addEventListener("click", startFlow);
@@ -755,7 +762,6 @@ window.addEventListener("DOMContentLoaded", () => {
   });
 
   sendSnapshotBtn?.addEventListener("click", async () => {
-    // Convert canvas to Blob and send
     cameraCanvas.toBlob(async (blob) => {
       if (!blob) return;
       await sendFileToAnalyze(new File([blob], "snapshot.jpg", { type: "image/jpeg" }), "Explain this homework/photo.");
@@ -770,28 +776,26 @@ window.addEventListener("DOMContentLoaded", () => {
     const file = e.target.files?.[0];
     if (!file) return;
     await sendFileToAnalyze(file, "Please help me with this file.");
-    fileInput.value = ""; // reset
+    fileInput.value = "";
   });
 
   // Buttons
-  // UPDATED: same robust selection in the DOM-ready scope
   const loginBtn   = document.getElementById("loginBtn")  || document.getElementById("login");
   const logoutBtn  = document.getElementById("logoutBtn") || document.getElementById("logout");
   const signupBtn  = document.getElementById("signupBtn") || document.getElementById("signup");
   const startUiBtn = document.getElementById("startBtn")  || document.getElementById("start");
 
   // Containers
-  const loginForm    = document.getElementById("login-form");    // <-- ADDED
-  // Add submit listener for login form
+  const loginForm    = document.getElementById("login-form");
   if (loginForm) {
     loginForm.addEventListener('submit', function (e) {
-      e.preventDefault(); // stop page reload
+      e.preventDefault();
       console.log("Login form submitted");
-      login(); // call your existing login() function
+      login(); // existing (no-op if not defined)
     });
   }
-  const loginFields  = document.getElementById("loginFields");   // email + password + enter
-  const signupFields = document.getElementById("signupFields");  // full signup area
+  const loginFields  = document.getElementById("loginFields");
+  const signupFields = document.getElementById("signupFields");
 
   // Login inputs
   const emailEl = document.getElementById("email");
@@ -804,11 +808,28 @@ window.addEventListener("DOMContentLoaded", () => {
   const lastNameEl    = document.getElementById("lastName");
   const ageEl         = document.getElementById("age");
   const sexEl         = document.getElementById("sex");
-  const langEl        = document.getElementById("lang") || document.getElementById("language"); // UPDATED
+  const langEl        = document.getElementById("lang") || document.getElementById("language");
+  langEl?.addEventListener("change", () => {
+    currentLang = langEl.value || "en-US";
+    try { recognizer?.abort?.(); } catch {} // restart SR with new language
+    setStatus(`Listening… (${currentLang})`); // CHANGE
+  });
 
   // Status labels (optional)
   const authStatusEl = document.getElementById("authStatus");
   const statusEl     = document.getElementById("status");
+
+  // Wire typed message send (button + Enter)
+  sendBtn?.addEventListener("click", (e) => {
+    e.preventDefault();
+    sendTypedMessage();
+  });
+  textEl?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      sendTypedMessage();
+    }
+  });
 
   // Helpers
   const show       = (el, d = "flex") => el && (el.style.display = d);
@@ -852,7 +873,6 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   function updateUIForSignedOut() {
-    // Default: hide all inputs; user must click Login/Sign Up to reveal
     hide(loginFields);
     hide(signupFields);
     hide(emailEl);
@@ -869,33 +889,29 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   // 🔐 Login button
-  // UPDATED: Login button now submits if fields are visible and filled
   loginBtn?.addEventListener("click", async (e) => {
-    e.preventDefault(); // UPDATED: stop form submit / page reload
+    e.preventDefault();
 
     const loginFields  = document.getElementById("login-form") || document.getElementById("loginFields");
     const signupFields = document.getElementById("signupFields");
     const emailEl = document.getElementById("email");
     const passEl  = document.getElementById("password");
 
-    // Already signed in → just surface Start/Logout
     if (auth.currentUser) {
       updateUIForSignedIn(auth.currentUser);
       return;
     }
 
-    // If login form not visible yet → show it (and hide signup)
     if (!isVisible(loginFields)) {
       loginFields && (loginFields.style.display = "flex");
       signupFields && (signupFields.style.display = "none");
       authStatusEl && (authStatusEl.textContent = "Please sign in");
-      showInline(emailEl);                     // <-- ADD THIS
-      showInline(passEl);                      // <-- ADD THIS
+      showInline(emailEl);
+      showInline(passEl);
       emailEl?.focus();
       return;
     }
 
-    // Form is visible → if both fields filled, submit; else focus missing one
     const email = emailEl?.value?.trim();
     const pass  = passEl?.value?.trim();
 
@@ -904,7 +920,6 @@ window.addEventListener("DOMContentLoaded", () => {
 
     try {
       await signInWithEmailAndPassword(auth, email, pass);
-      // onAuthStateChanged will flip UI to Start/Logout
     } catch (e) {
       const code = e?.code || "";
       if (code === "auth/user-not-found") {
@@ -936,14 +951,12 @@ window.addEventListener("DOMContentLoaded", () => {
     const pass  = passEl?.value?.trim();
     if (!email || !pass) {
       alert("Please enter both email and password");
-      // If inputs somehow hidden, re-show them now:
       unhideLoginInputs();
       return;
     }
 
     try {
       await signInWithEmailAndPassword(auth, email, pass);
-      // onAuthStateChanged elsewhere will flip the UI to Start/Logout
     } catch (e) {
       const code = e?.code || "";
       if (code === "auth/user-not-found") {
@@ -972,7 +985,6 @@ window.addEventListener("DOMContentLoaded", () => {
       const email = document.getElementById("email")?.value?.trim();
       const pass  = document.getElementById("password")?.value?.trim();
       if (!email || !pass) {
-        // make sure the fields are visible if the user tried to submit too early
         const lf = document.getElementById("login-form") || document.getElementById("loginFields");
         if (lf) lf.style.display = "flex";
         document.getElementById("email")?.focus();
@@ -981,7 +993,6 @@ window.addEventListener("DOMContentLoaded", () => {
 
       try {
         await signInWithEmailAndPassword(auth, email, pass);
-        // onAuthStateChanged will flip UI to Start + Logout
       } catch (e2) {
         const code = e2?.code || "";
         if (code === "auth/user-not-found") {
@@ -1025,7 +1036,6 @@ window.addEventListener("DOMContentLoaded", () => {
         firstName, lastName, age: parseInt(age, 10), sex, lang
       });
       alert("✅ Signup successful! Welcome to Miss Sunny.");
-      // onAuthStateChanged will now show Start/Logout
     } catch (e) {
       alert("Signup failed: " + e.message);
       unhideSignupInputs();
@@ -1042,16 +1052,13 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // First paint fallback (in case onAuthStateChanged hasn't fired yet)
   if (!auth.currentUser) {
     updateUIForSignedOut();
   }
 });
 
 // ---- IMPORTANT CLEANUP ----
-// REMOVED: the duplicate “Start button wiring (initial greeting + voice loop) IIFE”
-// It conflicted with the robust SR state machine and created a second recognizer.
-// The functionality is now consolidated in startFlow/ensureSRStart above. // REMOVED
+// REMOVED duplicate start wiring; consolidated in startFlow/ensureSRStart.
 
 // Final initial status
 setStatus("Idle");
