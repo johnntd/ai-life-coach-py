@@ -95,6 +95,10 @@ def load_system_prompt() -> str:
         print(f"[prompt] Loaded: {path}")
     return _prompt_cache["text"]
 
+# ==== PATCH[SESSION_PROMPT_BUILDER] START ====
+# CHANGE: Include sex/pronouns and feature toggles (study/interpreter/tutor) in session context.
+# WHY: Enables Sunny to adapt behavior per modes and VN pronoun policy.
+
 def build_session_prompt(payload: dict) -> str:
     """File-based master prompt + per-session context."""
     base = load_system_prompt()
@@ -104,7 +108,13 @@ def build_session_prompt(payload: dict) -> str:
     if payload.get("mode"): bits.append(f"Mode: {payload['mode']}")
     if payload.get("objective"): bits.append(f"Objective: {payload['objective']}")
     if payload.get("lang"): bits.append(f"Preferred language: {payload['lang']}")
+    if payload.get("sex"): bits.append(f"Sex: {payload['sex']}")  # m/f/unknown
+    # Feature toggles
+    if payload.get("study"): bits.append("StudyMode: ON")
+    if payload.get("interpreter"): bits.append("InterpreterMode: ON")
+    if payload.get("tutor"): bits.append("TutorMode: ON")
     return f"{base}\n\n---\nSESSION CONTEXT\n" + "\n".join(bits) if bits else base
+# ==== PATCH[SESSION_PROMPT_BUILDER] END ====
 
 # =========================
 # Health / Root
@@ -146,12 +156,36 @@ def detect_lang_from_text(text: str, session_lang: str = "en-US") -> str:
             return "vi-VN"
     return session_lang if session_lang in ("vi-VN", "en-US") else "en-US"
 
+# ==== PATCH[DEFAULT_SEED_AND_FALLBACK_NAME] START ====
+# CHANGE: Rename “Miss Sunny” -> “Sunny” in fallback strings and seed lines.
+# WHY: Persona is now gender-neutral “Sunny”.
+
 def default_seed_line(name: str, age: int, mode: str, lang: str) -> str:
     if (age or 0) < 13:
-        return f"Hi, {name}! I’m Miss Sunny. Want to play a quick learning game with me?"
+        return f"Hi, {name}! I’m Sunny. Want to play a quick learning game with me?"
     if (age or 0) < 18:
         return f"Hey {name}, ready for a fast check-in and a mini study plan?"
-    return f"Hi {name}, I’m Miss Sunny. What would you like to work on first?"
+    return f"Hi {name}, I’m Sunny. What would you like to work on first?"
+
+def load_system_prompt() -> str:
+    path = _resolve_prompt_path()
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return ("You are Sunny, a warm, encouraging life coach and tutor. "
+                "Be concise (1–3 sentences) and use Camera/Upload when helpful.")
+    if (_prompt_cache["text"] is None
+        or _prompt_cache["mtime"] != st.st_mtime
+        or _prompt_cache["path"] != str(path)):
+        text = path.read_text(encoding="utf-8")
+        if text.startswith("---"):
+            end = text.find("\n---", 3)
+            if end != -1:
+                text = text[end+4:].lstrip()
+        _prompt_cache.update({"text": text, "mtime": st.st_mtime, "path": str(path)})
+        print(f"[prompt] Loaded: {path}")
+    return _prompt_cache["text"]
+# ==== PATCH[DEFAULT_SEED_AND_FALLBACK_NAME] END ====
 
 def compose_messages(payload: dict) -> list:
     sys = build_session_prompt(payload)
@@ -211,6 +245,10 @@ async def tts(request: Request):
 # =========================
 # /chat – main conversation
 # =========================
+# ==== PATCH[CHAT_PRIMARY_PAYLOAD] START ====
+# CHANGE: Accept sex + feature toggles from body and pass them to compose_messages/build_session_prompt.
+# WHY: Sunny’s behavior now depends on these flags.
+
 @app.post("/chat")
 async def chat(request: Request):
     body = await request.json()
@@ -218,6 +256,10 @@ async def chat(request: Request):
     age   = int(body.get("age") or 18)
     mode  = body.get("mode") or ("child" if age < 13 else "teen" if age < 18 else "adult")
     session_lang = body.get("lang") or "en-US"
+    sex = (body.get("sex") or "").strip() or "unknown"
+    study = bool(body.get("study") or False)
+    interpreter = bool(body.get("interpreter") or False)
+    tutor = bool(body.get("tutor") or False)
 
     messages = compose_messages({
         "name": name,
@@ -225,6 +267,10 @@ async def chat(request: Request):
         "mode": mode,
         "objective": body.get("objective") or "gentle warm-up assessment",
         "lang": session_lang,
+        "sex": sex,
+        "study": study,
+        "interpreter": interpreter,
+        "tutor": tutor,
         "history": body.get("history") or [],
         "user_text": body.get("user_text") or "",
         "include_seed": bool(body.get("include_seed") or False),
@@ -235,12 +281,9 @@ async def chat(request: Request):
     model_used = PRIMARY_MODEL
 
     try:
-        # CHANGE: Your SDK doesn't expose `responses`. Use Chat Completions for GPT-5 too,
-        # and avoid params that GPT-5 rejects (no max_tokens, no temperature overrides).
-        resp = oai.chat.completions.create(            # CHANGE
-            model=PRIMARY_MODEL,                       # CHANGE
-            messages=messages                          # CHANGE
-            # CHANGE: do NOT pass temperature/max_tokens to GPT-5 here
+        resp = oai.chat.completions.create(
+            model=PRIMARY_MODEL,
+            messages=messages
         )
         text = (resp.choices[0].message.content or "").strip()
     except Exception as e:
@@ -250,8 +293,8 @@ async def chat(request: Request):
             resp = oai.chat.completions.create(
                 model=FALLBACK_MODEL,
                 messages=messages,
-                max_tokens=220,            # CHANGE: safe on fallback
-                temperature=0.6            # CHANGE
+                max_tokens=220,
+                temperature=0.6
             )
             text = (resp.choices[0].message.content or "").strip()
         except Exception as e2:
@@ -270,6 +313,7 @@ async def chat(request: Request):
         "profile": { "name": name, "age": age, "mode": mode },
         "model_used": model_used
     })
+# ==== PATCH[CHAT_PRIMARY_PAYLOAD] END ====
 
 # =========================
 # /analyze – images/PDFs for tutoring

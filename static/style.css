@@ -177,3 +177,84 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font:14px/
   gap:12px;
   margin: 6px 0 10px;
 }
+/* ==== PATCH[SIGNUP_GRID_3_ROWS] START ====
+   CHANGE: Three fixed rows for Sign Up.
+   Row 1: First Name | Last Name
+   Row 2: Age | Sex | Language
+   Row 3: Email | Password | Enter
+   WHY: Prevents auto-wrapping into many rows. */
+
+#signupFields{
+  display: none;                 /* JS switches this to 'grid' when opened */
+  gap: 8px;
+  align-items: center;
+  grid-auto-rows: minmax(40px, auto);
+  grid-template-columns: repeat(6, minmax(120px, 1fr)); /* 6 equal tracks */
+}
+
+/* Make items fill their cell */
+#signupFields > input,
+#signupFields > select,
+#signupFields > button{
+  width: 100%;
+  min-width: 0;
+}
+
+/* --- Row 1 --- */
+#signupFields #firstName { grid-row: 1; grid-column: 1 / span 3; }
+#signupFields #lastName  { grid-row: 1; grid-column: 4 / span 3; }
+
+/* --- Row 2 --- */
+#signupFields #age  { grid-row: 2; grid-column: 1 / span 2; }
+#signupFields #sex  { grid-row: 2; grid-column: 3 / span 2; }
+#signupFields #lang { grid-row: 2; grid-column: 5 / span 2; }
+
+/* --- Row 3 --- */
+#signupFields #emailSignup    { grid-row: 3; grid-column: 1 / span 3; }
+#signupFields #passwordSignup { grid-row: 3; grid-column: 4 / span 2; }
+#signupFields #enterSignup    { grid-row: 3; grid-column: 6 / span 1; }
+
+/* Optional: keep the Enter button nicely sized instead of full width */
+#signupFields #enterSignup{
+  justify-self: stretch;        /* or 'start' if you want a smaller button */
+  min-width: 120px;
+}
+/* ==== PATCH[SIGNUP_GRID_3_ROWS] END ==== */
+/* ==== PATCH[ACTION_PILLS_FORCE] END OF FILE ==== */
+#cameraUploadRow{
+display:flex; justify-content:center; align-items:center;
+gap:12px; margin:6px 0 10px;
+}
+.action-pill{
+display:inline-flex !important;
+align-items:center; justify-content:center;
+gap:8px;
+height:48px !important;
+min-width:156px !important;
+padding:10px 18px !important;
+border-radius:999px !important;
+background: linear-gradient(180deg, var(–accent), #00a2c7) !important;
+border:1px solid rgba(255,255,255,.25) !important;
+box-shadow: 0 6px 18px rgba(0,180,216,.28), inset 0 1px 0 rgba(255,255,255,.25) !important;
+color:#fff !important; font-weight:600; letter-spacing:.2px; white-space:nowrap;
+}
+#cameraBtn::before      { content:“📷”; font-size:16px; }
+#uploadBtn::before      { content:“📎”; font-size:16px; }
+#studyBtn::before       { content:“🎓”; font-size:16px; }
+#interpreterBtn::before { content:“🌐”; font-size:16px; }
+#tutorBtn::before       { content:“📘”; font-size:16px; }
+.action-pill:hover{
+transform: translateY(-1px);
+box-shadow: 0 10px 22px rgba(0,180,216,.35), inset 0 1px 0 rgba(255,255,255,.35);
+filter: saturate(1.05);
+}
+.action-pill:active{
+transform: translateY(0);
+box-shadow: 0 4px 12px rgba(0,180,216,.25), inset 0 2px 6px rgba(0,0,0,.25);
+}
+.action-pill:focus-visible{
+outline: 2px solid #90e0ef; outline-offset: 2px;
+}
+@media (max-width:520px){
+#cameraUploadRow .action-pill{ width:100%; }
+}

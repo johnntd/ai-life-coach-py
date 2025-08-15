@@ -6,9 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="mobile-web-app-capable" content="yes" />
   <link rel="icon" href="/static/favicon.ico" />
-  <!-- All styles moved to /static/style.css -->
-  <link rel="stylesheet" href="/static/style.css" />
-  <!-- Import map so the ES-module loaders can resolve "three" locally (no CORS) -->
+  <link rel="stylesheet" href="/static/style.css?v=3" />
   <script type="importmap">
   {
     "imports": {
@@ -26,92 +24,92 @@
       <!-- Legacy hook for CSS .talking -->
       <div id="avatar"></div>
     </section>
-<!-----------------------------don't touch anything above this line ------------------------>
 
-<!-- Chat + Controls -->
-<aside id="controlPanel" style="padding: 12px;">
+    <!-- Chat + Controls -->
+    <aside id="controlPanel" style="padding: 12px;">
 
-  <!-- Auth Status & Model Info -->
-  <div id="authStatus" style="font-size:13px; opacity:.7; margin-bottom:6px;"></div>
-  <div id="log"></div>
-  <p id="model"></p>
+      <!-- Auth Status & Model Info -->
+      <div id="authStatus" style="font-size:13px; opacity:.7; margin-bottom:6px;"></div>
+      <div id="log"></div>
+      <p id="model"></p>
 
-  <!-- Chat Input (leave exactly as-is) -->
-  <div class="row" style="margin-bottom: 12px; gap: 8px;">
-    <input id="text" type="text" placeholder="Type a message…" style="flex:1" />
-    <button id="send">Send</button>
-  </div>
+      <!-- Chat Input (leave exactly as-is) -->
+      <div class="row" style="margin-bottom: 12px; gap: 8px;">
+        <input id="text" type="text" placeholder="Type a message…" style="flex:1" />
+        <button id="send">Send</button>
+      </div>
 
-  <!-- Camera + Upload (centered, same line; Upload on the right) -->
-  <div id="cameraUploadRow">
-    <button id="cameraBtn" class="btn">Camera</button>
-    <button id="uploadBtn" class="btn">Upload</button>
-  </div>
-  <input id="fileInput" type="file" accept="image/*,.pdf" hidden>
+      <!-- Camera + Upload + Modes (one line) -->
+      <div id="cameraUploadRow">
+        <button id="cameraBtn" class="btn action-pill">Camera</button>
+        <button id="uploadBtn" class="btn action-pill">Upload</button>
+        <button id="studyBtn" class="btn action-pill" aria-pressed="false">Study</button>
+        <button id="interpreterBtn" class="btn action-pill" aria-pressed="false">Interpreter</button>
+        <button id="tutorBtn" class="btn action-pill" aria-pressed="false">Tutor</button>
+      </div>
 
-  <div class="row" style="gap: 8px; flex-wrap: wrap; margin-bottom: 10px;">
-    <button id="start" style="display: none;">Start</button>
-    <button id="logoutBtn" style="display: none;">Logout</button>
+      <input id="fileInput" type="file" accept="image/*,.pdf" hidden>
 
-    <button id="loginBtn">Login</button>
-    <button id="signupBtn">Sign Up</button>
-  </div>
+      <!-- SigninBtn signupBnt logoutBtn -->
+      <div class="row" style="gap: 8px; flex-wrap: wrap; margin-bottom: 10px;">
+  <button id="loginBtn">Login</button>
+  <button id="signupBtn">Sign Up</button>
+  <button id="logoutBtn" style="display:none;">Logout</button>
+</div>
+      <!-- Login Form -->
+      <form id="login-form" class="row" style="gap:8px;flex-wrap:wrap;display:none;">
+        <input id="email" type="email" placeholder="Email" required />
+        <input id="password" type="password" placeholder="Password" required />
+        <button type="submit" id="enterLogin">Enter</button>
+      </form>
 
-<!-- Login Form -->
-<form id="login-form" class="row" style="gap:8px;flex-wrap:wrap;display:none;">
-  <input id="email" type="email" placeholder="Email" required />
-  <input id="password" type="password" placeholder="Password" required />
-  <button type="submit" id="enterLogin">Enter</button>
-</form>
+      <!-- Signup Form -->
+      <div id="signupFields" class="row" style="gap: 8px; flex-wrap: wrap; display: none;">
+        <input id="firstName" placeholder="First Name" />
+        <input id="lastName" placeholder="Last Name" />
+        <input id="age" type="number" placeholder="Age" />
+        <select id="sex">
+          <option value="">Select Sex</option>
+          <option value="f">Female</option>
+          <option value="m">Male</option>
+        </select>
+        <select id="lang">
+          <option value="en-US">English</option>
+          <option value="vi-VN">Vietnamese</option>
+        </select>
+        <input id="emailSignup" type="email" placeholder="Email" />
+        <input id="passwordSignup" type="password" placeholder="Password" />
+        <button id="enterSignup">Enter</button>
+      </div>
 
-  <!-- Signup Form -->
-  <div id="signupFields" class="row" style="gap: 8px; flex-wrap: wrap; display: none;">
-    <input id="firstName" placeholder="First Name" />
-    <input id="lastName" placeholder="Last Name" />
-    <input id="age" type="number" placeholder="Age" />
-    <select id="sex">
-      <option value="">Select Sex</option>
-      <option value="f">Female</option>
-      <option value="m">Male</option>
-    </select>
-    <select id="lang">
-      <option value="en-US">English</option>
-      <option value="vi-VN">Vietnamese</option>
-    </select>
-    <input id="emailSignup" type="email" placeholder="Email" />
-    <input id="passwordSignup" type="password" placeholder="Password" />
-    <button id="enterSignup">Enter</button>
-  </div>
+      <!-- Status message -->
+      <div id="status" style="margin: 8px 0;">Idle</div>
+    </aside>
 
-  <!-- Status message -->
-  <div id="status" style="margin: 8px 0;">Idle</div>
-
-</aside>
-<!-- Camera Modal -->
-<div id="cameraModal" style="display:none; position:fixed; inset:0; background:#0009; z-index:1000; align-items:center; justify-content:center;">
-  <div style="background:#0b1f3a; padding:16px; border-radius:12px; width:min(720px,95vw);">
-    <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
-      <strong style="color:#fff">Camera</strong>
-      <div style="flex:1"></div>
-      <button id="closeCamera" class="btn">Close</button>
+    <!-- Camera Modal (used by cameraBtn) -->
+    <div id="cameraModal" style="display:none; position:fixed; inset:0; background:#0009; z-index:1000; align-items:center; justify-content:center;">
+      <div style="background:#0b1f3a; padding:16px; border-radius:12px; width:min(720px,95vw);">
+        <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+          <strong style="color:#fff">Camera</strong>
+          <div style="flex:1"></div>
+          <button id="closeCamera" class="btn">Close</button>
+        </div>
+        <video id="cameraVideo" autoplay playsinline style="width:100%; border-radius:12px; background:#111"></video>
+        <canvas id="cameraCanvas" width="1280" height="720" style="display:none"></canvas>
+        <div style="display:flex; gap:8px; margin-top:10px;">
+          <button id="captureBtn" class="btn">Capture</button>
+          <button id="retakeBtn" class="btn" style="display:none;">Retake</button>
+          <div style="flex:1"></div>
+          <button id="sendSnapshotBtn" class="btn" style="display:none;">Send to Tutor</button>
+        </div>
+        <small style="color:#bcd; display:block; margin-top:6px;">
+          Tip: point at a page/exercise—Sunny will explain or help solve it.
+        </small>
+      </div>
     </div>
-    <video id="cameraVideo" autoplay playsinline style="width:100%; border-radius:12px; background:#111"></video>
-    <canvas id="cameraCanvas" width="1280" height="720" style="display:none"></canvas>
-    <div style="display:flex; gap:8px; margin-top:10px;">
-      <button id="captureBtn" class="btn">Capture</button>
-      <button id="retakeBtn" class="btn" style="display:none;">Retake</button>
-      <div style="flex:1"></div>
-      <button id="sendSnapshotBtn" class="btn" style="display:none;">Send to Tutor</button>
-    </div>
-    <small style="color:#bcd; display:block; margin-top:6px;">
-      Tip: point at a page/exercise—Miss Sunny will explain or help solve it.
-    </small>
-  </div>
-</div> 
 
-<!-----------------------------don't touch anything below this line ------------------------>
-  <!-- TTS audio (what we also analyze for lip-sync) -->
-  <audio id="ttsAudio" preload="auto"></audio>
+    <!-- TTS audio (also used for lip-sync) -->
+    <audio id="ttsAudio" preload="auto"></audio>
   </div>
 
   <!-- Three.js avatar viewer + lip-sync (kept stable) -->
@@ -179,7 +177,7 @@
         if (obj.isMesh) obj.frustumCulled = false;
         if (!headMesh && obj.isMesh && obj.morphTargetDictionary && /Head/i.test(obj.name)) headMesh = obj;
         if (!headBone && /Head\b/i.test(obj.name)) headBone = obj;
-        if (!jawBone  && /jaw/i.test(obj.name))   jawBone  = obj; // broader match
+        if (!jawBone  && /jaw/i.test(obj.name))   jawBone  = obj;
         if (!eyeL     && /LeftEye/i.test(obj.name)) eyeL   = obj;
         if (!eyeR     && /RightEye/i.test(obj.name)) eyeR  = obj;
       });
@@ -272,6 +270,7 @@
 
     onResize();
   </script>
-<script type="module" src="/static/app.js?v=latency-baseline"></script>
+<script type="module" src="/static/app.js?v=latency-baseline2"></script>
+
 </body>
 </html>
