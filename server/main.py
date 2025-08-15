@@ -24,7 +24,7 @@ except Exception:
     HAVE_PDF = False
 
 try:
-    from PIL import Image  # noqa: F401
+    from PIL import Image  # noqa: F401  (kept for future use)
     HAVE_PIL = True
 except Exception:
     HAVE_PIL = False
@@ -38,16 +38,13 @@ from fastapi.staticfiles import StaticFiles
 # =========================
 load_dotenv()
 
-# ==================== PATCH BLOCK: MODEL + CORS CONFIG =====================
-# CHANGE: keep your authoritative env knobs and add max_completion_tokens
-PRIMARY_MODEL      = os.getenv("PRIMARY_MODEL", "gpt-5-2025-08-07")
-FALLBACK_MODEL     = os.getenv("FALLBACK_MODEL", "gpt-4o")
-TTS_MODEL          = os.getenv("TTS_MODEL", "gpt-4o-mini-tts")
-TTS_VOICE          = os.getenv("TTS_VOICE", "alloy")
+# CHANGE: Authoritative model/env knobs (default to your requested values)
+PRIMARY_MODEL      = os.getenv("PRIMARY_MODEL", "gpt-5-2025-08-07")  # KEEP
+FALLBACK_MODEL     = os.getenv("FALLBACK_MODEL", "gpt-4o")           # KEEP
+TTS_MODEL          = os.getenv("TTS_MODEL", "gpt-4o-mini-tts")       # KEEP
+TTS_VOICE          = os.getenv("TTS_VOICE", "alloy")                 # KEEP
 TRANSCRIBE_MODEL   = os.getenv("TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe")
 CORS_ALLOWED       = os.getenv("ALLOWED_ORIGINS", "*").split(",")
-MAX_COMPLETION_TOKENS = int(os.getenv("MAX_COMPLETION_TOKENS", "80"))  # CHANGE
-# ==========================================================================
 
 app = FastAPI(title="Miss Sunny Backend", version="1.0.0")
 
@@ -65,6 +62,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 # Prompt loader (file-based)
 # =========================
 APP_DIR = Path(__file__).resolve().parent
+# CHANGE: directory name is 'prompts' in your repo
 PROMPT_FILE = (APP_DIR / ".." / "prompts" / "coach_system_prompt.md").resolve()
 
 _prompt_cache = {"text": None, "mtime": None, "path": None}
@@ -98,6 +96,7 @@ def load_system_prompt() -> str:
     return _prompt_cache["text"]
 
 def build_session_prompt(payload: dict) -> str:
+    """File-based master prompt + per-session context."""
     base = load_system_prompt()
     bits = []
     if payload.get("name"): bits.append(f"User: {payload['name']}")
@@ -162,7 +161,7 @@ def compose_messages(payload: dict) -> list:
     for turn in history_list:
         role = turn.get("sender")
         txt  = (turn.get("text") or "").strip()
-        if not txt:
+        if not txt: 
             continue
         messages.append({"role": "assistant" if role in ("coach","assistant") else "user", "content": txt})
 
@@ -235,37 +234,29 @@ async def chat(request: Request):
     text = ""
     model_used = PRIMARY_MODEL
 
-    # ==================== PATCH BLOCK: GPT-5 FIRST, RELIABLE FALLBACK ====================
     try:
-        # CHANGE: Use Chat Completions with GPT-5-series and valid params
-        resp = oai.chat.completions.create(
-            model=PRIMARY_MODEL,
-            messages=messages,
-            temperature=1,                              # GPT-5 supports only default=1
-            max_completion_tokens=MAX_COMPLETION_TOKENS # GPT-5 param name
+        # CHANGE: Your SDK doesn't expose `responses`. Use Chat Completions for GPT-5 too,
+        # and avoid params that GPT-5 rejects (no max_tokens, no temperature overrides).
+        resp = oai.chat.completions.create(            # CHANGE
+            model=PRIMARY_MODEL,                       # CHANGE
+            messages=messages                          # CHANGE
+            # CHANGE: do NOT pass temperature/max_tokens to GPT-5 here
         )
         text = (resp.choices[0].message.content or "").strip()
-        # CHANGE: record actual model the API says it used
-        model_used = getattr(resp, "model", PRIMARY_MODEL)  # ensures UI shows GPT-5 when used
     except Exception as e:
         print("[chat] primary failed; falling back:", repr(e))
-        text = ""
-
-    # CHANGE: if GPT-5 returned empty, try once with gpt-4o to keep flow alive
-    if not text:
+        model_used = FALLBACK_MODEL
         try:
-            resp_fb = oai.chat.completions.create(
+            resp = oai.chat.completions.create(
                 model=FALLBACK_MODEL,
                 messages=messages,
-                temperature=1,
-                max_tokens=MAX_COMPLETION_TOKENS
+                max_tokens=220,            # CHANGE: safe on fallback
+                temperature=0.6            # CHANGE
             )
-            text = (resp_fb.choices[0].message.content or "").strip()
-            model_used = getattr(resp_fb, "model", FALLBACK_MODEL)
+            text = (resp.choices[0].message.content or "").strip()
         except Exception as e2:
             print("[chat] fallback failed:", repr(e2))
             text = ""
-    # ====================================================================================
 
     if not text:
         text = default_seed_line(name=name, age=age, mode=mode, lang=session_lang)
@@ -319,8 +310,8 @@ async def analyze_file(
             resp = oai.chat.completions.create(
                 model=FALLBACK_MODEL,
                 messages=messages,
-                temperature=1,
-                max_tokens=MAX_COMPLETION_TOKENS
+                max_tokens=200,
+                temperature=0.5,
             )
             text = (resp.choices[0].message.content or "").strip()
             return JSONResponse({"text": clamp2(text)})
@@ -345,8 +336,8 @@ async def analyze_file(
             resp = oai.chat.completions.create(
                 model=FALLBACK_MODEL,
                 messages=messages,
-                temperature=1,
-                max_tokens=MAX_COMPLETION_TOKENS
+                max_tokens=220,
+                temperature=0.5,
             )
             text = (resp.choices[0].message.content or "").strip()
             return JSONResponse({"text": clamp2(text)})
