@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: ai-life-coach
+    runtime: python
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PRIMARY_MODEL
+        value: gpt-5-2025-08-07
+      - key: FALLBACK_MODEL
+        value: gpt-4o
+      - key: TTS_MODEL
+        value: gpt-4o-mini-tts
+      - key: TTS_VOICE
+        value: alloy
+      - key: TRANSCRIBE_MODEL
+        value: gpt-4o-mini-transcribe
+      - key: ALLOWED_ORIGINS
+        value: "*"
+      - key: OPENAI_API_KEY
+        sync: false

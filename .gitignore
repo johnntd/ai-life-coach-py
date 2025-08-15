@@ -1,18 +1,9 @@
-# never track these
-.venv/
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
 .env
-.env.*
-*.log
-data/
-uploads/
-recordings/
-tmp/
-
-# keep only the THREE build you actually use
-static/vendor/*
-!static/vendor/three-r152.2/
-# keep the coach model
-!static/models/
-static/models/*
-!static/models/coach.glb
+node_modules/
+.DS_Store
