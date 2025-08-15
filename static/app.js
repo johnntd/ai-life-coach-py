@@ -27,7 +27,7 @@ const firebaseConfig = {
   apiKey: "AIzaSyAJqZ04ON-lsX2_08ET6CMUAZzxvbHsUpc",
   authDomain: "ai-life-coach-694f9.firebaseapp.com",
   projectId: "ai-life-coach-694f9",
-  storageBucket: "ai-life-coach-694f9.firebasestorage.app", // CHANGE: align with Collaboration Master Prompt (was appspot.com)
+  storageBucket: "ai-life-coach-694f9.firebasestorage.app", // KEEP
   messagingSenderId: "328321656985",
   appId: "1:328321656985:web:041c0d8585741cdcbdb008",
   measurementId: "G-K75Q06YF6X"
@@ -63,13 +63,10 @@ const firstNameEl = $("#firstName");
 const lastNameEl  = $("#lastName");
 const ageEl       = $("#age");
 const sexEl       = $("#sex");
-// UPDATED: support either #language or #lang (whichever your HTML uses)
-const langEl      = document.getElementById("language") || document.getElementById("lang"); // UPDATED
+const langEl      = document.getElementById("language") || document.getElementById("lang");
 
-// UPDATED: robust selectors for both naming styles
 const startBtn = document.getElementById("startBtn") || document.getElementById("start");
 const stopBtn  = document.getElementById("stopBtn")  || document.getElementById("stop");
-// UPDATED: support either ...Btn or plain ids
 const loginBtn  = document.getElementById("loginBtn")  || document.getElementById("login");
 const logoutBtn = document.getElementById("logoutBtn") || document.getElementById("logout");
 const signupBtn = document.getElementById("signupBtn") || document.getElementById("signup");
@@ -77,11 +74,11 @@ const signupBtn = document.getElementById("signupBtn") || document.getElementByI
 const sendBtn     = $("#send");
 const textEl      = $("#text");
 
-const avatarEl     = $("#avatar");     // legacy CSS “talking” hook
+const avatarEl     = $("#avatar");
 const audioEl      = $("#ttsAudio");
 const authStatusEl = document.getElementById("authStatus");
 
-// ---------- Config (kept from your baseline; only COOLDOWN_TTS tuned earlier) ----------
+// ---------- Config ----------
 const CONFIG = {
   SILENCE_HOLD : 350,
   MAX_UTT      : 5000,
@@ -92,13 +89,13 @@ const CONFIG = {
 
 // ---------- State ----------
 let currentUid = null;
-let listening  = false;   // session running
-let talking    = false;   // TTS speaking
-let cooldown   = false;   // short guard after TTS
-let history    = [];      // {sender: "you"|"coach", text}
+let listening  = false;
+let talking    = false;
+let cooldown   = false;
+let history    = [];
 let lastCoach  = "";
-let running    = false;   // mirrors listening
-let currentLang = (langEl?.value || "en-US"); // initialize with dropdown/default
+let running    = false;
+let currentLang = (langEl?.value || "en-US");
 
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
 
@@ -139,11 +136,10 @@ function isVisible(el) {
 function escapeHtml(s) {
   return String(s ?? "")
     .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
+    .replace(/</g, "&lt;")   // CHANGE: add missing semicolon
     .replace(/>/g, "&gt;");
 }
 
-// UPDATED: appendBubble now uses #messages if available, else falls back to #log
 function appendBubble(sender, text) {
   const container = document.getElementById("messages") || logEl;
   const div = document.createElement("div");
@@ -199,7 +195,6 @@ function captureFrame() {
   const ctx = cameraCanvas.getContext("2d");
   ctx.drawImage(cameraVideo, 0, 0, w, h);
 
-  // Show send/retake
   captureBtn.style.display = "none";
   retakeBtn.style.display = "inline-block";
   sendSnapshotBtn.style.display = "inline-block";
@@ -214,7 +209,6 @@ function dataURLToBlob(dataURL) {
   return new Blob([arr], { type: mime });
 }
 
-// Send any File/Blob to the server for analysis
 async function sendFileToAnalyze(file, userPrompt = "Please help me with this.") {
   const form = new FormData();
   form.append("file", file);
@@ -227,7 +221,7 @@ async function sendFileToAnalyze(file, userPrompt = "Please help me with this.")
   form.append("age", age);
   form.append("mode", mode);
   form.append("prompt", userPrompt);
-  form.append("lang", currentLang); // keep server in sync
+  form.append("lang", currentLang);
 
   setStatus("Analyzing…");
   try {
@@ -266,7 +260,7 @@ async function callChat({ user_text = "", include_seed = false, no_reply = false
     objective: "gentle warm-up assessment",
     history,
     no_reply,
-    lang: currentLang // ensure server prompt + TTS match UI
+    lang: currentLang
   };
 
   const res = await fetch("/chat", {
@@ -280,14 +274,23 @@ async function callChat({ user_text = "", include_seed = false, no_reply = false
 }
 
 // ---------- TTS helpers ----------
-// CHANGE: widen Vietnamese detection to catch *romanized* Vietnamese too
-function detectVietnamese(text) {                                        // CHANGE
-  if (/[ạảãáàâấầẩẫậăắằẳẵặđêếềểễệôốồổỗộơớờởỡợưứừửữự]/i.test(text))  // CHANGE
-    return true;                                                         // CHANGE
-  const t = (text || "").toLowerCase();                                  // CHANGE
-  // Common romanized cues that English SR might produce before we switch:  // CHANGE
-  return /\b(xin chao|cam on|vui long|khong|duoc|anh|chi|em|toi|ban|bai|hoc|gia su|bai tap)\b/.test(t); // CHANGE
-}                                                                        // CHANGE
+function detectVietnamese(text) {
+  if (/[ạảãáàâấầẩẫậăắằẳẵặđêếềểễệôốồổỗộơớờởỡợưứừửữự]/i.test(text)) return true;
+  const t = (text || "").toLowerCase();
+  return /\b(xin chao|cam on|vui long|khong|duoc|anh|chi|em|toi|ban|bai|hoc|gia su|bai tap)\b/.test(t);
+}
+
+// CHANGE: TTS mutex / cancellation primitives
+let ttsController = null;
+let ttsUrl = null;
+
+function cancelSpeech() {                         // CHANGE
+  try { window.speechSynthesis?.cancel?.(); } catch {}
+  try { const el = document.getElementById("ttsAudio"); if (el) { el.pause(); el.currentTime = 0; el.src = ""; } } catch {}
+  try { if (ttsUrl) { URL.revokeObjectURL(ttsUrl); ttsUrl = null; } } catch {}
+  try { ttsController?.abort?.(); } catch {}
+  talking = false;
+}
 
 function speakWeb(text) {
   try {
@@ -310,20 +313,17 @@ function speakWeb(text) {
 
 async function speak(text) {
   const t = (text ?? "").trim();
-  if (!t) {
-    console.warn("speak(): empty text; skipping TTS");
-    return;
-  }
+  if (!t) return;
+
+  cancelSpeech();                                   // CHANGE
+  ttsController = new AbortController();            // CHANGE
 
   try {
     const res = await fetch("/tts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text: t,
-        voice: "alloy",
-        format: "mp3"
-      })
+      body: JSON.stringify({ text: t, voice: "alloy", format: "mp3" }),
+      signal: ttsController.signal                  // CHANGE
     });
 
     if (!res.ok) {
@@ -333,50 +333,54 @@ async function speak(text) {
 
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
+    ttsUrl = url;                                   // CHANGE
 
     const audioNode = document.getElementById("ttsAudio");
     if (audioNode) {
       audioNode.src = url;
       await audioNode.play().catch(async (e) => {
         console.warn("Audio play failed; fallback to Web Speech:", e);
-        URL.revokeObjectURL(url);
+        try { URL.revokeObjectURL(ttsUrl); } catch {}
+        ttsUrl = null;
         await speakWeb(t);
       });
       await new Promise((resolve) => {
-        audioNode.onended = () => { URL.revokeObjectURL(url); resolve(); };
+        audioNode.onended = () => {
+          try { if (ttsUrl) { URL.revokeObjectURL(ttsUrl); ttsUrl = null; } } catch {}
+          resolve();
+        };
       });
     } else {
       await new Promise(async (resolve) => {
         const a = new Audio(url);
         a.play().catch(async (e) => {
           console.warn("Temp Audio() play failed; fallback to Web Speech:", e);
-          URL.revokeObjectURL(url);
+          try { URL.revokeObjectURL(ttsUrl); } catch {}
+          ttsUrl = null;
           await speakWeb(t);
           resolve();
         });
-        a.onended = () => { URL.revokeObjectURL(url); resolve(); };
+        a.onended = () => {
+          try { if (ttsUrl) { URL.revokeObjectURL(ttsUrl); ttsUrl = null; } } catch {}
+          resolve();
+        };
       });
     }
 
   } catch (err) {
+    if (err?.name === "AbortError" || /AbortError/i.test(String(err))) return; // CHANGE
     console.warn("Server TTS failed; using Web Speech fallback:", err);
     await speakWeb(t);
   }
 }
 
-// Chunking helpers
 function chunkTextForTTS(text, maxChars = 220) {
   const s = (text || "").trim();
   if (!s) return [];
   const sentences = s.split(/(?<=[.!?])\s+/);
   const chunks = [];
   let buf = "";
-
-  const push = () => {
-    if (buf.trim()) chunks.push(buf.trim());
-    buf = "";
-  };
-
+  const push = () => { if (buf.trim()) chunks.push(buf.trim()); buf = ""; };
   for (const sent of sentences) {
     if ((buf + " " + sent).trim().length <= maxChars) {
       buf = (buf ? buf + " " : "") + sent;
@@ -385,9 +389,7 @@ function chunkTextForTTS(text, maxChars = 220) {
       if (sent.length <= maxChars) {
         buf = sent;
       } else {
-        for (let i = 0; i < sent.length; i += maxChars) {
-          chunks.push(sent.slice(i, i + maxChars));
-        }
+        for (let i = 0; i < sent.length; i += maxChars) chunks.push(sent.slice(i, i + maxChars));
         buf = "";
       }
     }
@@ -408,7 +410,6 @@ async function chatTurn(userText){
   try{
     setStatus("Thinking…");
     const data  = await callChat({ user_text: userText, include_seed: false });
-
     const reply = (data.reply ?? data.text ?? "").trim();
     modelEl.textContent = `Model: ${data.model_used || data.model || "?"}`;
 
@@ -416,16 +417,17 @@ async function chatTurn(userText){
       appendBubble("coach", reply);
       history.push({ sender: "coach", text: reply });
       lastCoach = reply;
+      cancelSpeech();                 // CHANGE
       await speakInChunks(reply);
       startSilenceTimer();
     } else {
       appendBubble("coach", "Sorry, I didn’t get a reply.");
     }
-    setStatus(`Listening… (${currentLang})`); // CHANGE: show active SR language
+    setStatus(`Listening… (${currentLang})`);
   } catch(err){
     console.error(err);
     appendBubble("coach", "Network hiccup. Let's try again?");
-    setStatus(`Listening… (${currentLang})`); // CHANGE
+    setStatus(`Listening… (${currentLang})`);
     ensureSRStart(140);
   }
 }
@@ -435,10 +437,10 @@ async function chatTurn(userText){
 // ==================================================================
 const SRCls = window.SpeechRecognition || window.webkitSpeechRecognition;
 let recognizer      = null;
-let srRunning       = false;   // true after onstart
-let srStarting      = false;   // between .start() and onstart
-let srStartTimer    = null;    // debouncer
-let srKeepAlive     = null;    // interval id
+let srRunning       = false;
+let srStarting      = false;
+let srStartTimer    = null;
+let srKeepAlive     = null;
 let srLastHeardAt   = 0;
 
 function looksLikeEcho(txt, coach){
@@ -493,7 +495,7 @@ function realStartSR(){
     srStarting = false;
     srRunning  = true;
     srLastHeardAt = performance.now();
-    setStatus(`Listening… (${currentLang})`); // CHANGE: reflect SR lang
+    setStatus(`Listening… (${currentLang})`);
   };
   recognizer.onaudiostart = () => { srLastHeardAt = performance.now(); };
   recognizer.onaudioend   = () => { srLastHeardAt = performance.now(); };
@@ -509,19 +511,17 @@ function realStartSR(){
     const txt = (last[0]?.transcript || "").trim();
     if (!txt) { cycleSRSoon(40); return; }
 
-    // CHANGE: robust auto-switch — also recognizes romanized Vietnamese
-    if (detectVietnamese(txt) && currentLang !== "vi-VN") {   // CHANGE
-      currentLang = "vi-VN";                                   // CHANGE
-      try { recognizer.abort(); } catch {}                     // CHANGE
-      return;                                                  // CHANGE
-    } else if (!detectVietnamese(txt) && currentLang !== "en-US") { // CHANGE
-      // If we captured plain ASCII and not Vietnamese cues, prefer English  // CHANGE
-      if (!/[^\x00-\x7F]/.test(txt)) {                          // CHANGE
-        currentLang = "en-US";                                   // CHANGE
-        try { recognizer.abort(); } catch {}                     // CHANGE
-        return;                                                  // CHANGE
-      }                                                          // CHANGE
-    }                                                            // CHANGE
+    if (detectVietnamese(txt) && currentLang !== "vi-VN") {
+      currentLang = "vi-VN";
+      try { recognizer.abort(); } catch {}
+      return;
+    } else if (!detectVietnamese(txt) && currentLang !== "en-US") {
+      if (!/[^\x00-\x7F]/.test(txt)) {
+        currentLang = "en-US";
+        try { recognizer.abort(); } catch {}
+        return;
+      }
+    }
 
     if (looksLikeEcho(txt, lastCoach)) {
       srLastHeardAt = performance.now();
@@ -590,10 +590,15 @@ function stopSR(){
 
 // TTS lifecycle hooks -> coordinate with SR
 audioEl?.addEventListener("play", () => {
+  talking = true;
   stopSR();
 });
 audioEl?.addEventListener("ended", () => {
-  ensureSRStart((CONFIG.COOLDOWN_TTS || 650) + 20);
+  talking = false;
+  try { if (ttsUrl) { URL.revokeObjectURL(ttsUrl); ttsUrl = null; } } catch {}
+  cooldown = true;
+  const cd = CONFIG.COOLDOWN_TTS || 650;
+  setTimeout(() => { cooldown = false; ensureSRStart(cd + 20); }, cd);
 });
 
 // ---------- Start/Stop flow ----------
@@ -615,13 +620,14 @@ async function startFlow(){
       appendBubble("coach", reply);
       history.push({ sender: "coach", text: reply });
       lastCoach = reply;
+      cancelSpeech();            // CHANGE
       await speakInChunks(reply);
       startSilenceTimer();
     } else {
       appendBubble("coach", "I had trouble starting. Try again?");
     }
 
-    setStatus(`Listening… (${currentLang})`); // CHANGE
+    setStatus(`Listening… (${currentLang})`);
     ensureSRStart(20);
   }catch(e){
     console.error(e);
@@ -637,39 +643,39 @@ async function startFlow(){
 function stopFlow(){
   listening = false;
   running   = false;
+  cancelSpeech();                // CHANGE
   stopSR();
   if (startBtn) startBtn.style.display = "inline-block";
   if (stopBtn)  stopBtn.style.display  = "none";
   setStatus("Idle");
 }
 
-// CHANGE: helper to send typed message via the Send button / Enter key
-async function sendTypedMessage(){                               // CHANGE
-  const txt = (textEl?.value || "").trim();                      // CHANGE
-  if (!txt) return;                                              // CHANGE
+// Send typed message
+async function sendTypedMessage(){
+  const txt = (textEl?.value || "").trim();
+  if (!txt) return;
 
-  // CHANGE: auto-switch language on typed text as well
-  if (detectVietnamese(txt) && currentLang !== "vi-VN") {         // CHANGE
-    currentLang = "vi-VN";                                        // CHANGE
-    try { recognizer?.abort?.(); } catch {}                       // CHANGE
-  } else if (!detectVietnamese(txt) && currentLang !== "en-US") { // CHANGE
-    if (!/[^\x00-\x7F]/.test(txt)) {                              // CHANGE
-      currentLang = "en-US";                                      // CHANGE
-      try { recognizer?.abort?.(); } catch {}                     // CHANGE
-    }                                                             // CHANGE
-  }                                                               // CHANGE
+  if (detectVietnamese(txt) && currentLang !== "vi-VN") {
+    currentLang = "vi-VN";
+    try { recognizer?.abort?.(); } catch {}
+  } else if (!detectVietnamese(txt) && currentLang !== "en-US") {
+    if (!/[^\x00-\x7F]/.test(txt)) {
+      currentLang = "en-US";
+      try { recognizer?.abort?.(); } catch {}
+    }
+  }
 
-  appendBubble("you", txt);                                      // CHANGE
-  history.push({ sender: "you", text: txt });                    // CHANGE
-  textEl.value = "";                                             // CHANGE
-  sendBtn && (sendBtn.disabled = true);                          // CHANGE
-  try {                                                          // CHANGE
-    await chatTurn(txt);                                         // CHANGE
-  } finally {                                                    // CHANGE
-    sendBtn && (sendBtn.disabled = false);                       // CHANGE
-    textEl?.focus();                                             // CHANGE
-  }                                                              // CHANGE
-}                                                                // CHANGE
+  appendBubble("you", txt);
+  history.push({ sender: "you", text: txt });
+  textEl.value = "";
+  sendBtn && (sendBtn.disabled = true);
+  try {
+    await chatTurn(txt);
+  } finally {
+    sendBtn && (sendBtn.disabled = false);
+    textEl?.focus();
+  }
+}
 
 // Wire buttons
 startBtn?.addEventListener("click", startFlow);
@@ -677,7 +683,7 @@ stopBtn?.addEventListener("click", stopFlow);
 
 // Update UI when login state changes
 onAuthStateChanged(auth, async (user) => {
-  const authForm    = document.getElementById("authForm"); // may be null in your layout
+  const authForm    = document.getElementById("authForm");
   const signupFields= document.getElementById("signupFields");
   const loginFields = document.getElementById("login-form") || document.getElementById("loginFields");
 
@@ -687,7 +693,6 @@ onAuthStateChanged(auth, async (user) => {
     const snap = await getDoc(profileRef);
     const profile = snap.exists() ? snap.data() : {};
 
-    // Hide all auth inputs/sections
     emailEl && (emailEl.style.display = "none");
     passEl  && (passEl.style.display  = "none");
     loginFields  && (loginFields.style.display  = "none");
@@ -699,7 +704,6 @@ onAuthStateChanged(auth, async (user) => {
     sexEl       && (sexEl.style.display       = "none");
     langEl      && (langEl.style.display      = "none");
 
-    // Show main controls
     loginBtn   && (loginBtn.style.display   = "none");
     signupBtn  && (signupBtn.style.display  = "none");
     logoutBtn  && (logoutBtn.style.display  = "inline-block");
@@ -710,7 +714,6 @@ onAuthStateChanged(auth, async (user) => {
     currentUid  = uid;
     currentLang = profile.lang || currentLang || "en-US";
 
-    // Prefill (in memory) if needed
     firstNameEl && (firstNameEl.value = profile.firstName || "");
     lastNameEl  && (lastNameEl.value  = profile.lastName  || "");
     ageEl       && (ageEl.value       = profile.age       || "");
@@ -720,10 +723,8 @@ onAuthStateChanged(auth, async (user) => {
     statusEl && (statusEl.textContent = "Ready");
     authStatusEl && (authStatusEl.textContent = `Signed in as ${profile.firstName || user.email}`);
   } else {
-    // Signed out → show only Login / Sign Up buttons
     currentUid = null;
 
-    // Hide fields until user chooses an action
     firstNameEl && (firstNameEl.style.display = "none");
     lastNameEl  && (lastNameEl.style.display  = "none");
     ageEl       && (ageEl.style.display       = "none");
@@ -743,24 +744,17 @@ onAuthStateChanged(auth, async (user) => {
   }
 });
 
-// ✅ Safely run all DOM code only after the page is fully loaded
+// DOM ready
 window.addEventListener("DOMContentLoaded", () => {
-
-  // Camera button
   cameraBtn?.addEventListener("click", openCameraModal);
   closeCameraBtn?.addEventListener("click", closeCameraModal);
 
-  captureBtn?.addEventListener("click", () => {
-    captureFrame();
-  });
-
+  captureBtn?.addEventListener("click", () => { captureFrame(); });
   retakeBtn?.addEventListener("click", () => {
-    // Re-enable live preview
     captureBtn.style.display = "inline-block";
     retakeBtn.style.display = "none";
     sendSnapshotBtn.style.display = "none";
   });
-
   sendSnapshotBtn?.addEventListener("click", async () => {
     cameraCanvas.toBlob(async (blob) => {
       if (!blob) return;
@@ -769,9 +763,7 @@ window.addEventListener("DOMContentLoaded", () => {
     }, "image/jpeg", 0.92);
   });
 
-  // Upload button
   uploadBtn?.addEventListener("click", () => fileInput?.click());
-
   fileInput?.addEventListener("change", async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -779,29 +771,24 @@ window.addEventListener("DOMContentLoaded", () => {
     fileInput.value = "";
   });
 
-  // Buttons
   const loginBtn   = document.getElementById("loginBtn")  || document.getElementById("login");
   const logoutBtn  = document.getElementById("logoutBtn") || document.getElementById("logout");
   const signupBtn  = document.getElementById("signupBtn") || document.getElementById("signup");
   const startUiBtn = document.getElementById("startBtn")  || document.getElementById("start");
 
-  // Containers
   const loginForm    = document.getElementById("login-form");
   if (loginForm) {
     loginForm.addEventListener('submit', function (e) {
       e.preventDefault();
       console.log("Login form submitted");
-      login(); // existing (no-op if not defined)
     });
   }
   const loginFields  = document.getElementById("loginFields");
   const signupFields = document.getElementById("signupFields");
 
-  // Login inputs
   const emailEl = document.getElementById("email");
   const passEl  = document.getElementById("password");
 
-  // Signup inputs
   const emailSignupEl = document.getElementById("emailSignup");
   const passSignupEl  = document.getElementById("passwordSignup");
   const firstNameEl   = document.getElementById("firstName");
@@ -811,15 +798,13 @@ window.addEventListener("DOMContentLoaded", () => {
   const langEl        = document.getElementById("lang") || document.getElementById("language");
   langEl?.addEventListener("change", () => {
     currentLang = langEl.value || "en-US";
-    try { recognizer?.abort?.(); } catch {} // restart SR with new language
-    setStatus(`Listening… (${currentLang})`); // CHANGE
+    try { recognizer?.abort?.(); } catch {}
+    setStatus(`Listening… (${currentLang})`);
   });
 
-  // Status labels (optional)
   const authStatusEl = document.getElementById("authStatus");
   const statusEl     = document.getElementById("status");
 
-  // Wire typed message send (button + Enter)
   sendBtn?.addEventListener("click", (e) => {
     e.preventDefault();
     sendTypedMessage();
@@ -831,8 +816,6 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // Helpers
-  const show       = (el, d = "flex") => el && (el.style.display = d);
   const showInline = (el) => el && (el.style.display = "inline-block");
   const hide       = (el) => el && (el.style.display = "none");
   const setText    = (el, t) => el && (el.textContent = t);
@@ -888,7 +871,6 @@ window.addEventListener("DOMContentLoaded", () => {
     setText(authStatusEl, "Not signed in");
   }
 
-  // 🔐 Login button
   loginBtn?.addEventListener("click", async (e) => {
     e.preventDefault();
 
@@ -939,13 +921,12 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // 🆕 Signup button
   signupBtn?.addEventListener("click", () => {
     unhideSignupInputs();
-    setText(authStatusEl, "Create your account");
+    const el = document.getElementById("authStatus");
+    el && (el.textContent = "Create your account");
   });
 
-  // ✅ Handle Login
   document.getElementById("enterLogin")?.addEventListener("click", async () => {
     const email = emailEl?.value?.trim();
     const pass  = passEl?.value?.trim();
@@ -954,7 +935,6 @@ window.addEventListener("DOMContentLoaded", () => {
       unhideLoginInputs();
       return;
     }
-
     try {
       await signInWithEmailAndPassword(auth, email, pass);
     } catch (e) {
@@ -962,7 +942,8 @@ window.addEventListener("DOMContentLoaded", () => {
       if (code === "auth/user-not-found") {
         alert("No account found for this email. Please sign up.");
         unhideSignupInputs();
-        setText(authStatusEl, "Create your account");
+        const el = document.getElementById("authStatus");
+        el && (el.textContent = "Create your account");
       } else if (code === "auth/wrong-password") {
         alert("Incorrect password. Please try again.");
         unhideLoginInputs();
@@ -976,7 +957,6 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // Login form submit → Firebase sign-in
   const _loginForm = document.getElementById("login-form");
   if (_loginForm) {
     _loginForm.addEventListener("submit", async (e) => {
@@ -1014,7 +994,6 @@ window.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // ✅ Handle Signup
   document.getElementById("enterSignup")?.addEventListener("click", async () => {
     const email = emailSignupEl?.value?.trim();
     const pass  = passSignupEl?.value?.trim();
@@ -1042,7 +1021,6 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // 🚪 Logout
   logoutBtn?.addEventListener("click", async () => {
     try {
       await signOut(auth);
@@ -1056,9 +1034,6 @@ window.addEventListener("DOMContentLoaded", () => {
     updateUIForSignedOut();
   }
 });
-
-// ---- IMPORTANT CLEANUP ----
-// REMOVED duplicate start wiring; consolidated in startFlow/ensureSRStart.
 
 // Final initial status
 setStatus("Idle");

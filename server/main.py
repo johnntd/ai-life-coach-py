@@ -39,10 +39,10 @@ from fastapi.staticfiles import StaticFiles
 load_dotenv()
 
 # CHANGE: Authoritative model/env knobs (default to your requested values)
-PRIMARY_MODEL      = os.getenv("PRIMARY_MODEL", "gpt-5-2025-08-07")  # CHANGE
-FALLBACK_MODEL     = os.getenv("FALLBACK_MODEL", "gpt-4o")           # CHANGE
-TTS_MODEL          = os.getenv("TTS_MODEL", "gpt-4o-mini-tts")       # CHANGE
-TTS_VOICE          = os.getenv("TTS_VOICE", "alloy")                 # CHANGE
+PRIMARY_MODEL      = os.getenv("PRIMARY_MODEL", "gpt-5-2025-08-07")  # KEEP
+FALLBACK_MODEL     = os.getenv("FALLBACK_MODEL", "gpt-4o")           # KEEP
+TTS_MODEL          = os.getenv("TTS_MODEL", "gpt-4o-mini-tts")       # KEEP
+TTS_VOICE          = os.getenv("TTS_VOICE", "alloy")                 # KEEP
 TRANSCRIBE_MODEL   = os.getenv("TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe")
 CORS_ALLOWED       = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 
@@ -63,7 +63,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 # =========================
 APP_DIR = Path(__file__).resolve().parent
 # CHANGE: directory name is 'prompts' in your repo
-PROMPT_FILE = (APP_DIR / ".." / "prompts" / "coach_system_prompt.md").resolve()  # CHANGE
+PROMPT_FILE = (APP_DIR / ".." / "prompts" / "coach_system_prompt.md").resolve()
 
 _prompt_cache = {"text": None, "mtime": None, "path": None}
 
@@ -73,7 +73,7 @@ def _resolve_prompt_path() -> Path:
         return Path(env_path).resolve()
     ver = os.getenv("PROMPT_VERSION")
     if ver:
-        return (APP_DIR / ".." / "prompts" / f"coach_system_prompt.v{ver}.md").resolve()  # CHANGE
+        return (APP_DIR / ".." / "prompts" / f"coach_system_prompt.v{ver}.md").resolve()
     return PROMPT_FILE
 
 def load_system_prompt() -> str:
@@ -117,7 +117,7 @@ def root_page():
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=CORS_ALLOWED,  # CHANGE
+    allow_origins=CORS_ALLOWED,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -146,7 +146,6 @@ def detect_lang_from_text(text: str, session_lang: str = "en-US") -> str:
             return "vi-VN"
     return session_lang if session_lang in ("vi-VN", "en-US") else "en-US"
 
-# CHANGE: seed/proactive helper text (ensures non-empty starts)
 def default_seed_line(name: str, age: int, mode: str, lang: str) -> str:
     if (age or 0) < 13:
         return f"Hi, {name}! I’m Miss Sunny. Want to play a quick learning game with me?"
@@ -154,7 +153,6 @@ def default_seed_line(name: str, age: int, mode: str, lang: str) -> str:
         return f"Hey {name}, ready for a fast check-in and a mini study plan?"
     return f"Hi {name}, I’m Miss Sunny. What would you like to work on first?"
 
-# CHANGE: message composer (handles include_seed and no_reply)
 def compose_messages(payload: dict) -> list:
     sys = build_session_prompt(payload)
     messages = [{"role": "system", "content": sys}]
@@ -172,12 +170,10 @@ def compose_messages(payload: dict) -> list:
     no_reply = bool(payload.get("no_reply") or False)
 
     if include_seed:
-        # Ask the model to proactively start the plan for the right age group
         seed = ("Please greet warmly and immediately begin a brief, age-appropriate assessment or starter plan. "
                 "Ask one short question the learner can answer out loud.")
         messages.append({"role": "user", "content": seed})
     elif no_reply and not user_text:
-        # Proactive nudge when the learner stays silent
         nudge = ("The learner is quiet. Keep the session moving with the next short step or question. "
                  "Be encouraging and specific.")
         messages.append({"role": "user", "content": nudge})
@@ -202,8 +198,8 @@ async def tts(request: Request):
 
     try:
         with oai.audio.speech.with_streaming_response.create(
-            model=TTS_MODEL,                  # CHANGE
-            voice=TTS_VOICE,                  # CHANGE
+            model=TTS_MODEL,
+            voice=TTS_VOICE,
             input=text
         ) as resp:
             audio_bytes = resp.read()
@@ -223,7 +219,6 @@ async def chat(request: Request):
     mode  = body.get("mode") or ("child" if age < 13 else "teen" if age < 18 else "adult")
     session_lang = body.get("lang") or "en-US"
 
-    # Compose messages from payload (seed/silence-aware)
     messages = compose_messages({
         "name": name,
         "age": age,
@@ -233,30 +228,21 @@ async def chat(request: Request):
         "history": body.get("history") or [],
         "user_text": body.get("user_text") or "",
         "include_seed": bool(body.get("include_seed") or False),
-        "no_reply": bool(body.get("no_reply") or False),  # CHANGE
+        "no_reply": bool(body.get("no_reply") or False),
     })
 
     text = ""
     model_used = PRIMARY_MODEL
 
-    # CHANGE: Primary (gpt-5-*) uses Responses API semantics; avoid unsupported params.
     try:
-        if PRIMARY_MODEL.startswith("gpt-5"):
-            resp = oai.responses.create(                      # CHANGE
-                model=PRIMARY_MODEL,
-                input=messages                                # CHANGE: responses API accepts 'input'
-            )
-            # Pull the first text item safely
-            out = resp.output_text if hasattr(resp, "output_text") else None  # CHANGE
-            text = (out or "").strip()
-        else:
-            # Standard Chat Completions path
-            resp = oai.chat.completions.create(
-                model=PRIMARY_MODEL,
-                messages=messages
-                # NOTE: no temperature/max_tokens here for gpt-5 strictness
-            )
-            text = (resp.choices[0].message.content or "").strip()
+        # CHANGE: Your SDK doesn't expose `responses`. Use Chat Completions for GPT-5 too,
+        # and avoid params that GPT-5 rejects (no max_tokens, no temperature overrides).
+        resp = oai.chat.completions.create(            # CHANGE
+            model=PRIMARY_MODEL,                       # CHANGE
+            messages=messages                          # CHANGE
+            # CHANGE: do NOT pass temperature/max_tokens to GPT-5 here
+        )
+        text = (resp.choices[0].message.content or "").strip()
     except Exception as e:
         print("[chat] primary failed; falling back:", repr(e))
         model_used = FALLBACK_MODEL
@@ -264,7 +250,7 @@ async def chat(request: Request):
             resp = oai.chat.completions.create(
                 model=FALLBACK_MODEL,
                 messages=messages,
-                max_tokens=220,            # CHANGE: only on fallback path
+                max_tokens=220,            # CHANGE: safe on fallback
                 temperature=0.6            # CHANGE
             )
             text = (resp.choices[0].message.content or "").strip()
@@ -272,11 +258,9 @@ async def chat(request: Request):
             print("[chat] fallback failed:", repr(e2))
             text = ""
 
-    # Guarantee a non-empty first line so Start never stalls
     if not text:
-        text = default_seed_line(name=name, age=age, mode=mode, lang=session_lang)  # CHANGE
+        text = default_seed_line(name=name, age=age, mode=mode, lang=session_lang)
 
-    # Clamp and lang detect for TTS friendliness
     text = clamp_two_sentences(text)
     lang = detect_lang_from_text(text, session_lang=session_lang)
 
@@ -304,7 +288,6 @@ async def analyze_file(
     data = await file.read()
 
     def sys_prompt(objective: str):
-        # CHANGE: reuse file-based prompt
         return build_session_prompt({
             "name": name, "age": age, "mode": mode,
             "objective": objective, "lang": lang
@@ -324,7 +307,6 @@ async def analyze_file(
                     {"type": "image_url", "image_url": {"url": data_url}},
                 ]},
             ]
-            # Use fallback model for vision reliably
             resp = oai.chat.completions.create(
                 model=FALLBACK_MODEL,
                 messages=messages,
