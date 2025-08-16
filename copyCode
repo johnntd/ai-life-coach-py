@@ -1,0 +1,6 @@
+rm ~/Downloads/main.py
+cp server/main.py ~/Downloads/main.py
+rm ~/Downloads/index.html
+cp templates/index.html  ~/Downloads/index.html
+rm ~/Downloads/app.js
+cp static/app.js ~/Downloads/app.js

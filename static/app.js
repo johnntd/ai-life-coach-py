@@ -98,6 +98,23 @@ const CONFIG = {
 // ==== PATCH[STATE_FEATURE_TOGGLES] START ====
 // CHANGE: Track feature toggle state.
 // WHY: Send to backend so Sunny adapts behavior.
+<<<<<<< HEAD
+=======
+
+let studyMode = false;
+let interpreterMode = false;
+let tutorMode = false;
+// ==== PATCH[STATE_FEATURE_TOGGLES] END ====
+
+let currentUid = null;
+let listening  = false;
+let talking    = false;
+let cooldown   = false;
+let history    = [];
+let lastCoach  = "";
+let running    = false;
+let currentLang = (langEl?.value || "en-US");
+>>>>>>> REV0
 
 let studyMode = false;
 let interpreterMode = false;
@@ -191,6 +208,33 @@ async function warmupIOSAudio() {
   } catch (e) {
     console.warn("[iOS] warmup failed (will still try to speak later):", e);
   }
+}
+
+// [ADD] Proactive follow-up (silence watchdog)
+let silenceTimer = null;
+const SILENCE_MS = 7000;
+function clearSilenceTimer() {
+  if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+}
+async function startSilenceTimer() {
+  clearSilenceTimer();
+  silenceTimer = setTimeout(async () => {
+    try {
+      if (!listening || talking) return;
+      const data = await callChat({ user_text: "", include_seed: false, no_reply: true });
+      const reply = (data.reply ?? data.text ?? "").trim();
+      if (reply) {
+        appendBubble("coach", reply);
+        history.push({ sender: "coach", text: reply });
+        lastCoach = reply;
+        await speakInChunks(reply);
+        ensureSRStart(40);
+        startSilenceTimer();
+      }
+    } catch (err) {
+      console.warn("[silence] follow-up failed", err);
+    }
+  }, SILENCE_MS);
 }
 
 // ---------- Helpers ----------
@@ -444,6 +488,7 @@ async function speak(text) {
     const url = URL.createObjectURL(blob);
     ttsUrl = url;                                   // CHANGE
 
+<<<<<<< HEAD
     if (IS_IOS && !iosAudioPrimed) {
   // In case we somehow got here before the first tap
   await new Promise(r => {
@@ -457,6 +502,11 @@ async function speak(text) {
       audioNode.setAttribute?.("playsinline",""); // ✅ add this
       audioNode.src = url;
       audioNode.load?.();                         // ✅ and this (Safari likes it)
+=======
+    const audioNode = document.getElementById("ttsAudio");
+    if (audioNode) {
+      audioNode.src = url;
+>>>>>>> REV0
       await audioNode.play().catch(async (e) => {
         console.warn("Audio play failed; fallback to Web Speech:", e);
         try { URL.revokeObjectURL(ttsUrl); } catch {}
@@ -472,7 +522,10 @@ async function speak(text) {
     } else {
       await new Promise(async (resolve) => {
         const a = new Audio(url);
+<<<<<<< HEAD
         a.setAttribute?.("playsinline","");    // add this
+=======
+>>>>>>> REV0
         a.play().catch(async (e) => {
           console.warn("Temp Audio() play failed; fallback to Web Speech:", e);
           try { URL.revokeObjectURL(ttsUrl); } catch {}
@@ -834,6 +887,7 @@ onAuthStateChanged(auth, async (user) => {
     // ==== PATCH[AUTO_START_STOP] START ====
 // CHANGE: Auto-start the session when signed in.
 // WHY: Remove Start/Stop buttons; make it hands-free.
+<<<<<<< HEAD
 // inside onAuthStateChanged when user logs in:
 if (!listening) {
   if (IS_IOS && !iosAudioPrimed) {
@@ -846,6 +900,10 @@ if (!listening) {
   } else {
     await startFlow();
   }
+=======
+if (!listening) {
+  try { await startFlow(); } catch (e) { console.warn("auto start failed", e); }
+>>>>>>> REV0
 }
 // ==== PATCH[AUTO_START_STOP] END ====
 
@@ -890,6 +948,7 @@ signupBtn  && (signupBtn.style.display  = "inline-flex");
 // DOM ready
 window.addEventListener("DOMContentLoaded", () => {
 
+<<<<<<< HEAD
 // Prime iOS audio on first gesture
 ["touchstart","pointerdown","mousedown","click"].forEach(evt => {
   window.addEventListener(evt, warmupIOSAudio, { once: true, passive: true });
@@ -902,6 +961,8 @@ interpreterBtn?.addEventListener("click", warmupIOSAudio, { once: true });
 tutorBtn?.addEventListener("click", warmupIOSAudio, { once: true });
 
 
+=======
+>>>>>>> REV0
 // ==== PATCH[AUTH_UI_FLOW_INJECT_LOGOUT] START ====
 // CHANGE: If #logoutBtn is missing in HTML, create it next to Login.
 // WHY: JS expects this element to show/hide after auth changes.

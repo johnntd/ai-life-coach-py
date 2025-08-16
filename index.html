@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>AI Life Coach</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <link rel="icon" href="/static/favicon.ico" />
+
+  <style>
+    :root{
+      --bg:#0a0f2a;
+      --panel:#0e1638;
+      --text:#e8ecff;
+      --accent:#2a3570;
+      --border:#202a56;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+
+    /* Kid-first layout: avatar fills screen; controls dock at bottom */
+    .wrap{
+      display:grid;
+      grid-template-rows: 1fr auto;
+      grid-template-columns: 1fr;
+      height:100%;
+    }
+
+    /* Avatar area */
+    #avatarWrap{ position:relative; background: radial-gradient(1200px 800px at 40% 30%, #1a2250, #0a0f2a); overflow:hidden; }
+    #avatarCanvas{ position:absolute; inset:0; width:100%; height:100%; display:block; }
+
+    /* Legacy CSS speaking flag (preserved) */
+    #avatar.talking::after{
+      content:"Speaking…"; position:absolute; right:10px; bottom:10px;
+      background:#0009; color:#fff; padding:6px 8px; border-radius:8px; font-size:12px;
+    }
+    #avatar{ position:absolute; inset:0; pointer-events:none; }
+
+    /* Controls */
+    #controlPanel{
+      background:var(--panel);
+      border-top:1px solid var(--border);
+      display:flex; flex-direction:column; padding:14px;
+    }
+    #statusRow{display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; gap:8px;}
+    #status{font-weight:600; opacity:.9}
+    #model{opacity:.7}
+    #log{
+      flex:1; min-height:140px; max-height:28vh; overflow:auto;
+      background:#0b1231; border:1px solid #283056; border-radius:12px; padding:10px;
+    }
+    .bubble{padding:8px 10px; margin:6px 0; border-radius:10px; max-width:100%;}
+    .bubble.you{background:#17204a;}
+    .bubble.coach{background:#1c2556;}
+    .row{display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px;}
+    .row input[type="text"], .row input[type="number"], .row select{
+      background:#0f1430; color:var(--text); border:1px solid #283056; border-radius:8px; padding:8px 10px;
+    }
+    .row button{ background:var(--accent); color:#fff; border:0; border-radius:10px; padding:9px 12px; cursor:pointer; }
+    .row button[disabled]{opacity:.5; cursor:not-allowed;}
+  </style>
+
+  <!-- Import map so the ES-module loaders can resolve "three" locally (no CORS) -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "/static/vendor/three-r152.2/build/three.module.js",
+      "three/addons/": "/static/vendor/three-r152.2/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module" src="/static/app.js?v=latency-baseline"></script>
+</head>
+<body>
+  <div class="wrap">
+    <!-- 3D avatar (fills screen) -->
+    <section id="avatarWrap">
+      <canvas id="avatarCanvas"></canvas>
+      <!-- Legacy hook for CSS .talking -->
+      <div id="avatar"></div>
+    </section>
+
+    <!-- Chat + controls (bottom dock) -->
+    <aside id="controlPanel">
+      <div id="authStatus" style="font-size:13px; opacity:.7; margin-bottom:4px;"></div>
+      <div id="statusRow">
+      </div>
+
+      <div id="log"></div>
+
+      <div class="row">
+        <input id="text" type="text" placeholder="Type a message…" style="flex:1" />
+        <button id="send">Send</button>
+      </div>
+
+      <button id="logoutBtn" style="display:none;">Logout</button>
+      </div>
+
+      <div class="row">
+        <div id="status" style="margin-top: 8px;"></div>
+        <button id="start">Start</button>
+        <button id="stop" disabled>Stop</button>
+      </div>
+
+      <!-- TTS audio (what we also analyze for lip-sync) -->
+      <audio id="ttsAudio" preload="auto"></audio>
+    </aside>
+  </div>
+
+  <!-- 🔐 Login / Signup Row -->
+<div class="row">
+  <input id="email" type="text" placeholder="Email" />
+  <input id="password" type="password" placeholder="Password" />
+  <button id="loginBtn">Login</button>
+  <button id="signupBtn">Sign Up</button>
+  <button id="logoutBtn" style="display:none;">Logout</button>
+</div>
+
+<!-- Move this out as a separate row -->
+<div class="row" id="signupExtra" style="display: block;">
+  <input id="firstName" placeholder="First Name" /><br />
+  <input id="lastName" placeholder="Last Name" /><br />
+  <input id="age" placeholder="Age" type="number" /><br />
+  <select id="sex">
+    <option value="">Select Sex</option>
+    <option value="female">Female</option>
+    <option value="male">Male</option>
+    <option value="other">Other</option>
+  </select><br />
+  <select id="language">
+    <option value="en-US">English</option>
+    <option value="vi-VN">Vietnamese</option>
+  </select>
+</div>
+  <!-- Three.js avatar viewer + lip-sync (kept stable) -->
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader }    from 'three/addons/loaders/GLTFLoader.js';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    const canvas  = document.getElementById('avatarCanvas');
+    const audioEl = document.getElementById('ttsAudio');
+
+    const scene = new THREE.Scene();
+    scene.background = null;
+
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias:true, alpha:true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+
+    // Shoulders-up framing
+    const camera = new THREE.PerspectiveCamera(22, 1, 0.1, 100);
+    camera.position.set(0, 1.52, 1.25);
+    scene.add(camera);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableZoom = false;
+    controls.enablePan  = false;
+    controls.target.set(0, 1.52, 0);
+    controls.update();
+
+    // Lights
+    {
+      const hemi = new THREE.HemisphereLight(0xffffff, 0x222233, 0.8);
+      hemi.position.set(0, 1, 0);
+      scene.add(hemi);
+
+      const key = new THREE.DirectionalLight(0xffffff, 1.0);
+      key.position.set(3, 5, 4);
+      scene.add(key);
+
+      const fill = new THREE.DirectionalLight(0xb0c4ff, 0.6);
+      fill.position.set(-4, 3, 2);
+      scene.add(fill);
+
+      const rim = new THREE.DirectionalLight(0x8090ff, 0.6);
+      rim.position.set(0, 3, -3);
+      scene.add(rim);
+    }
+
+    function onResize(){
+      const rect = canvas.getBoundingClientRect();
+      const w = rect.width  || canvas.clientWidth  || window.innerWidth;
+      const h = rect.height || canvas.clientHeight || window.innerHeight;
+      renderer.setSize(w, h, false);
+      camera.aspect = w / Math.max(1, h);
+      camera.updateProjectionMatrix();
+    }
+    window.addEventListener('resize', onResize);
+
+    // Load model
+    const loader = new GLTFLoader();
+    let headMesh=null, mouthIndex=-1, headBone=null, jawBone=null, eyeL=null, eyeR=null;
+
+    loader.load('/static/models/coach.glb', (gltf)=>{
+      const root = gltf.scene;
+      root.traverse(obj=>{
+        if (obj.isMesh) obj.frustumCulled = false;
+        if (!headMesh && obj.isMesh && obj.morphTargetDictionary && /Head/i.test(obj.name)) headMesh = obj;
+        if (!headBone && /Head\b/i.test(obj.name)) headBone = obj;
+        if (!jawBone  && /jaw/i.test(obj.name))   jawBone  = obj; // broader match
+        if (!eyeL     && /LeftEye/i.test(obj.name)) eyeL   = obj;
+        if (!eyeR     && /RightEye/i.test(obj.name)) eyeR  = obj;
+      });
+      scene.add(root);
+
+      if (headMesh && headMesh.morphTargetDictionary){
+        const d = headMesh.morphTargetDictionary;
+        mouthIndex = d.mouthOpen ?? d.MouthOpen ?? d.jawOpen ?? d.JawOpen ?? -1;
+      }
+
+      controls.target.set(0, 1.52, 0);
+      camera.position.set(0, 1.52, 1.25);
+      camera.lookAt(controls.target);
+
+      console.log('[avatar] mouth morph:', mouthIndex>=0?'mouthOpen':'(none)');
+      console.log('[avatar] jaw bone:',   jawBone?jawBone.name:'(none)');
+      console.log('[avatar] head bone:',  headBone?headBone.name:'(none)');
+
+      onResize();
+      animate();
+    }, undefined, (e)=>console.error('[avatar] load error', e));
+
+    // Lip-sync
+    let ctx=null, analyser=null, srcNode=null, wired=false, usedCapture=false;
+    async function wireLipSyncOnce(){
+      if (wired) return; wired=true;
+      try{
+        ctx = new (window.AudioContext||window.webkitAudioContext)();
+        await ctx.resume();
+
+        if (audioEl.captureStream){
+          const stream = audioEl.captureStream();
+          if (stream && stream.getAudioTracks().length){
+            srcNode = ctx.createMediaStreamSource(stream);
+            usedCapture = true;
+            console.log('[avatar] lip-sync via captureStream()');
+          }
+        }
+        if (!srcNode){
+          srcNode = ctx.createMediaElementSource(audioEl);
+          console.log('[avatar] lip-sync via createMediaElementSource()');
+        }
+
+        analyser = ctx.createAnalyser();
+        analyser.fftSize = 1024;
+        srcNode.connect(analyser);
+        if (!usedCapture) srcNode.connect(ctx.destination); // ensure sound output
+      }catch(e){
+        wired=false;
+        console.warn('[avatar] audio graph create failed', e);
+      }
+    }
+    audioEl.addEventListener('play', wireLipSyncOnce, { once:true });
+
+    // Mouth + subtle head motion
+    let mouth=0, nf=0.004, gain=6.0, lastCal=0, gazeT=0, gx=0, gy=0;
+    function updateMouth(){
+      if (!analyser || !headMesh || mouthIndex<0) return;
+      const buf = new Uint8Array(analyser.fftSize);
+      analyser.getByteTimeDomainData(buf);
+      let s=0; for (let i=0;i<buf.length;i++){ const v=(buf[i]-128)/128; s+=v*v; }
+      const rms = Math.sqrt(s/buf.length);
+
+      const t = performance.now();
+      if (t-lastCal>2000){ nf = Math.max(0.0025, Math.min(0.02, 0.8*nf+0.2*rms)); lastCal=t; }
+
+      let target = (rms-nf)*gain; target = Math.max(0, Math.min(1, target));
+      const a = target>mouth ? 0.45 : 0.25;
+      mouth += (target-mouth)*a;
+
+      headMesh.morphTargetInfluences[mouthIndex]=mouth;
+      if (jawBone){ jawBone.rotation.x = mouth*0.20; }
+    }
+    function updateGaze(dt){
+      gazeT -= dt;
+      if (gazeT<=0){ gazeT=0.7+Math.random()*0.9; gx=(Math.random()*2-1)*0.06; gy=(Math.random()*2-1)*0.04; }
+      if (headBone){
+        headBone.rotation.y += (gx - headBone.rotation.y)*0.08;
+        headBone.rotation.x += (gy - headBone.rotation.x)*0.08;
+      }
+    }
+
+    let last=performance.now();
+    function animate(){
+      requestAnimationFrame(animate);
+      const now=performance.now(); const dt=(now-last)/1000; last=now;
+      updateMouth(); updateGaze(dt);
+      renderer.render(scene, camera);
+    }
+
+    onResize();
+  </script>
+</body>
+</html>

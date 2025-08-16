@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 :root{
   --bg:#0077b6;      /* Ocean blue background */
   --panel:#023e8a;   /* Darker blue panel */
@@ -165,12 +166,81 @@ body{
   min-width:156px;
   padding:10px 18px;
   border-radius:999px;
+=======
+:root {
+  --bg: #0077b6;     /* Ocean blue background */
+  --panel: #023e8a;  /* Darker blue panel */
+  --text: #e0f7fa;   /* Light aqua text */
+  --accent: #00b4d8; /* Bright blue buttons */
+  --border: #90e0ef; /* Soft border */
+}
+
+/* Row layout */
+.row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* Text, number, and select inputs */
+.row input[type="text"],
+.row input[type="number"],
+.row select {
+  background: #ffffff;
+  color: #0b1f3a;
+  border: 1px solid rgba(0,0,0,0.2);
+  border-radius: 10px;
+  padding: 10px 12px;
+  min-width: 220px;
+}
+
+/* Email and password inputs (login form) */
+.row input[type="email"],
+.row input[type="password"] {
+  background: #ffffff;
+  color: #0b1f3a;
+  border: 1px solid rgba(0,0,0,0.2);
+  border-radius: 10px;
+  padding: 10px 12px;
+  min-width: 220px;
+}
+
+.row input::placeholder {
+  color: #6b7280; /* subtle gray placeholder */
+}
+
+/* Buttons */
+.row button,
+.btn {
+  background: var(--accent);
+  color: #fff;
+  border: 0;
+  border-radius: 10px;
+  padding: 9px 12px;
+  cursor: pointer;
+}
+
+.btn[disabled] {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+/* --- Promote Camera & Upload buttons (no HTML changes) --- */
+#cameraBtn, #uploadBtn{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:10px 14px;
+  border-radius:999px;                 /* pill */
+>>>>>>> REV0
   background: linear-gradient(180deg, var(--accent), #00a2c7);
   border:1px solid rgba(255,255,255,.25);
   box-shadow: 0 6px 18px rgba(0,180,216,.28), inset 0 1px 0 rgba(255,255,255,.25);
   color:#fff;
   font-weight:600;
   letter-spacing:.2px;
+<<<<<<< HEAD
   white-space:nowrap;
   transform: translateZ(0);
   transition: transform .15s ease, box-shadow .2s ease, background .2s ease, filter .2s ease;
@@ -188,10 +258,28 @@ body{
 #cameraUploadRow > #studyBtn:hover,
 #cameraUploadRow > #interpreterBtn:hover,
 #cameraUploadRow > #tutorBtn:hover{
+=======
+  transform: translateZ(0);            /* enable GPU for hover lift */
+  transition: transform .15s ease, box-shadow .2s ease, background .2s ease, filter .2s ease;
+  margin-bottom:8px;                   /* add space so they don't look flush */
+}
+
+#cameraBtn::before{
+  content:"📷";
+  font-size:16px;
+}
+#uploadBtn::before{
+  content:"📎";
+  font-size:16px;
+}
+
+#cameraBtn:hover, #uploadBtn:hover{
+>>>>>>> REV0
   transform: translateY(-1px);
   box-shadow: 0 10px 22px rgba(0,180,216,.35), inset 0 1px 0 rgba(255,255,255,.35);
   filter: saturate(1.05);
 }
+<<<<<<< HEAD
 #cameraUploadRow > #cameraBtn:active,
 #cameraUploadRow > #uploadBtn:active,
 #cameraUploadRow > #studyBtn:active,
@@ -268,4 +356,174 @@ button, .btn{ touch-action:manipulation; }
   .row > * { width: 100% !important; }
   #cameraUploadRow { flex-direction: column; width: 100%; }
   #cameraUploadRow > * { width: 100% !important; }
+=======
+
+#cameraBtn:active, #uploadBtn:active{
+  transform: translateY(0);            /* pressed */
+  box-shadow: 0 4px 12px rgba(0,180,216,.25), inset 0 2px 6px rgba(0,0,0,.25);
+}
+
+#cameraBtn:focus-visible, #uploadBtn:focus-visible{
+  outline: 2px solid #90e0ef;          /* focus ring matches your theme */
+  outline-offset: 2px;
+}
+
+/* keep them from cramming next to the chat row on small screens */
+@media (max-width: 520px){
+  #cameraBtn, #uploadBtn{ width:100%; justify-content:center; }
+}
+
+/* Wrap Camera & Upload in a centered flex row */
+#cameraUploadContainer {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 12px; /* space between buttons */
+  margin-top: 8px;
+}
+
+/* Mobile: stack if space is too narrow */
+@media (max-width: 520px) {
+  #cameraUploadContainer {
+    flex-direction: column;
+    gap: 6px;
+  }
+}
+
+/* ===== SECOND STYLE BLOCK CONTENT FROM ORIGINAL (order preserved) ===== */
+#authStatus{ color:#0b1f3a; }             /* readable status text */    
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+
+/* Kid-first layout: avatar fills screen; controls dock at bottom */
+.wrap{
+  display:grid;
+  grid-template-rows: 1fr auto;
+  grid-template-columns: 1fr;
+  height:100%;
+}
+
+/* Avatar area */
+#avatarWrap{ position:relative; background: radial-gradient(1200px 800px at 40% 30%, #1a2250, #0a0f2a); overflow:hidden; }
+#avatarCanvas{ position:absolute; inset:0; width:100%; height:100%; display:block; }
+
+/* Legacy CSS speaking flag (preserved) */
+#avatar.talking::after{
+  content:"Speaking…"; position:absolute; right:10px; bottom:10px;
+  background:#0009; color:#fff; padding:6px 8px; border-radius:8px; font-size:12px;
+}
+#avatar{ position:absolute; inset:0; pointer-events:none; }
+
+/* Controls */
+#controlPanel{
+  background:var(--panel);
+  border-top:1px solid var(--border);
+  display:flex; flex-direction:column; padding:14px;
+}
+#statusRow{display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; gap:8px;}
+#status{font-weight:600; opacity:.9}
+#model{opacity:.7}
+#log{
+  flex:1; min-height:140px; max-height:28vh; overflow:auto;
+  background:#0b1231; border:1px solid #283056; border-radius:12px; padding:10px;
+}
+.bubble{padding:8px 10px; margin:6px 0; border-radius:10px; max-width:100%;}
+.bubble.you{background:#17204a;}
+.bubble.coach{background:#1c2556;}
+.row{display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px;}
+.row input[type="text"], .row input[type="number"], .row select{
+  background:#0f1430; color:var(--text); border:1px solid #283056; border-radius:8px; padding:8px 10px;
+}
+.row button{ background:var(--accent); color:#fff; border:0; border-radius:10px; padding:9px 12px; cursor:pointer; }
+.row button[disabled]{opacity:.5; cursor:not-allowed;}
+
+/* ===== NEW: Centered Camera + Upload row (align visually with message row) ===== */
+#cameraUploadRow{
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  gap:12px;
+  margin: 6px 0 10px;
+}
+/* ==== PATCH[SIGNUP_GRID_3_ROWS] START ====
+   CHANGE: Three fixed rows for Sign Up.
+   Row 1: First Name | Last Name
+   Row 2: Age | Sex | Language
+   Row 3: Email | Password | Enter
+   WHY: Prevents auto-wrapping into many rows. */
+
+#signupFields{
+  display: none;                 /* JS switches this to 'grid' when opened */
+  gap: 8px;
+  align-items: center;
+  grid-auto-rows: minmax(40px, auto);
+  grid-template-columns: repeat(6, minmax(120px, 1fr)); /* 6 equal tracks */
+}
+
+/* Make items fill their cell */
+#signupFields > input,
+#signupFields > select,
+#signupFields > button{
+  width: 100%;
+  min-width: 0;
+}
+
+/* --- Row 1 --- */
+#signupFields #firstName { grid-row: 1; grid-column: 1 / span 3; }
+#signupFields #lastName  { grid-row: 1; grid-column: 4 / span 3; }
+
+/* --- Row 2 --- */
+#signupFields #age  { grid-row: 2; grid-column: 1 / span 2; }
+#signupFields #sex  { grid-row: 2; grid-column: 3 / span 2; }
+#signupFields #lang { grid-row: 2; grid-column: 5 / span 2; }
+
+/* --- Row 3 --- */
+#signupFields #emailSignup    { grid-row: 3; grid-column: 1 / span 3; }
+#signupFields #passwordSignup { grid-row: 3; grid-column: 4 / span 2; }
+#signupFields #enterSignup    { grid-row: 3; grid-column: 6 / span 1; }
+
+/* Optional: keep the Enter button nicely sized instead of full width */
+#signupFields #enterSignup{
+  justify-self: stretch;        /* or 'start' if you want a smaller button */
+  min-width: 120px;
+}
+/* ==== PATCH[SIGNUP_GRID_3_ROWS] END ==== */
+/* ==== PATCH[ACTION_PILLS_FORCE] END OF FILE ==== */
+#cameraUploadRow{
+display:flex; justify-content:center; align-items:center;
+gap:12px; margin:6px 0 10px;
+}
+.action-pill{
+display:inline-flex !important;
+align-items:center; justify-content:center;
+gap:8px;
+height:48px !important;
+min-width:156px !important;
+padding:10px 18px !important;
+border-radius:999px !important;
+background: linear-gradient(180deg, var(–accent), #00a2c7) !important;
+border:1px solid rgba(255,255,255,.25) !important;
+box-shadow: 0 6px 18px rgba(0,180,216,.28), inset 0 1px 0 rgba(255,255,255,.25) !important;
+color:#fff !important; font-weight:600; letter-spacing:.2px; white-space:nowrap;
+}
+#cameraBtn::before      { content:“📷”; font-size:16px; }
+#uploadBtn::before      { content:“📎”; font-size:16px; }
+#studyBtn::before       { content:“🎓”; font-size:16px; }
+#interpreterBtn::before { content:“🌐”; font-size:16px; }
+#tutorBtn::before       { content:“📘”; font-size:16px; }
+.action-pill:hover{
+transform: translateY(-1px);
+box-shadow: 0 10px 22px rgba(0,180,216,.35), inset 0 1px 0 rgba(255,255,255,.35);
+filter: saturate(1.05);
+}
+.action-pill:active{
+transform: translateY(0);
+box-shadow: 0 4px 12px rgba(0,180,216,.25), inset 0 2px 6px rgba(0,0,0,.25);
+}
+.action-pill:focus-visible{
+outline: 2px solid #90e0ef; outline-offset: 2px;
+}
+@media (max-width:520px){
+#cameraUploadRow .action-pill{ width:100%; }
+>>>>>>> REV0
 }
