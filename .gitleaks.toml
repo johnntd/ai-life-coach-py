@@ -1,24 +1,11 @@
-<<<<<<< HEAD
-title = "local allowlist"
+title = "ai-life-coach gitleaks"
 
 [allowlist]
-  description = "Allow Firebase web apiKey (public, required on client)"
-  regexes = [
-    '''AIza[0-9A-Za-z\-_]{35}'''
-  ]
-  paths = [
-    '''^static/app\.js$'''
-  ]
-=======
-title = "Project gitleaks allowlist"
-
-# CHANGE: allowlist only the known public Firebase Web API key found in static/app.js.
-# We avoid a broad regex for all 'AIza...' keys to prevent masking real Google creds elsewhere.
-[allowlist]
+description = "Allow Firebase web api key; ignore local venv"
+# Firebase Web API keys are public by design in frontend apps.
 regexes = [
-  '''AIzaSyAJqZ04ON-lsX2_08ET6CMUAZzxvbHsUpc'''
+  '''AIza[0-9A-Za-z\-_]{35}'''
 ]
-
-# (Optional) if you ever change the Firebase key, update the value above.
-# Do NOT add your OpenAI key here. Keep that in .env and out of git history.
->>>>>>> REV0
+paths = [
+  '''^\.venv/'''   # your virtualenv should be gitignored anyway
+]

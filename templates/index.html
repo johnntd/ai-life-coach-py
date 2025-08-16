@@ -6,19 +6,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="mobile-web-app-capable" content="yes" />
   <link rel="icon" href="/static/favicon.ico" />
-<<<<<<< HEAD
   <link rel="stylesheet" href="/static/style.css?v=ios-audio-1" />
-=======
-  <link rel="stylesheet" href="/static/style.css?v=3" />
->>>>>>> REV0
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "/static/vendor/three-r152.2/build/three.module.js",
-      "three/addons/": "/static/vendor/three-r152.2/examples/jsm/"
-    }
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.152.2/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.152.2/examples/jsm/"
   }
-  </script>
+}
+</script>
 </head>
 <body>
   <div class="wrap">
@@ -113,11 +109,7 @@
     </div>
 
     <!-- TTS audio (also used for lip-sync) -->
-<<<<<<< HEAD
   <audio id="ttsAudio" preload="auto" playsinline></audio>
-=======
-    <audio id="ttsAudio" preload="auto"></audio>
->>>>>>> REV0
   </div>
 
   <!-- Three.js avatar viewer + lip-sync (kept stable) -->
@@ -278,11 +270,6 @@
 
     onResize();
   </script>
-<<<<<<< HEAD
   <script type="module" src="/static/app.js?v=ios-audio-1"></script>
-=======
-<script type="module" src="/static/app.js?v=latency-baseline2"></script>
-
->>>>>>> REV0
 </body>
 </html>

@@ -53,7 +53,6 @@ const closeCameraBtn  = document.getElementById("closeCamera");
 // ==== PATCH[ADD_MODE_BUTTON_REFS] START ====
 // CHANGE: Only wire Study / Interpreter / Tutor (no Stop button anymore).
 // WHY: App now auto-starts on login and auto-stops on logout.
-
 const studyBtn       = document.getElementById("studyBtn");
 const interpreterBtn = document.getElementById("interpreterBtn");
 const tutorBtn       = document.getElementById("tutorBtn");
@@ -76,7 +75,7 @@ const langEl      = document.getElementById("language") || document.getElementBy
 
 const loginBtn  = document.getElementById("loginBtn")  || document.getElementById("login");
 const signupBtn = document.getElementById("signupBtn") || document.getElementById("signup");
-let logoutBtn = document.getElementById("logoutBtn") || document.getElementById("logout");
+let logoutBtn   = document.getElementById("logoutBtn") || document.getElementById("logout");
 
 const sendBtn     = $("#send");
 const textEl      = $("#text");
@@ -95,39 +94,17 @@ const CONFIG = {
 };
 
 // ---------- State ----------
-// ==== PATCH[STATE_FEATURE_TOGGLES] START ====
-// CHANGE: Track feature toggle state.
-// WHY: Send to backend so Sunny adapts behavior.
-<<<<<<< HEAD
-=======
-
 let studyMode = false;
 let interpreterMode = false;
 let tutorMode = false;
-// ==== PATCH[STATE_FEATURE_TOGGLES] END ====
 
-let currentUid = null;
-let listening  = false;
-let talking    = false;
-let cooldown   = false;
-let history    = [];
-let lastCoach  = "";
-let running    = false;
-let currentLang = (langEl?.value || "en-US");
->>>>>>> REV0
-
-let studyMode = false;
-let interpreterMode = false;
-let tutorMode = false;
-// ==== PATCH[STATE_FEATURE_TOGGLES] END ====
-
-let currentUid = null;
-let listening  = false;
-let talking    = false;
-let cooldown   = false;
-let history    = [];
-let lastCoach  = "";
-let running    = false;
+let currentUid  = null;
+let listening   = false;
+let talking     = false;
+let cooldown    = false;
+let history     = [];
+let lastCoach   = "";
+let running     = false;
 let currentLang = (langEl?.value || "en-US");
 
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
@@ -210,33 +187,6 @@ async function warmupIOSAudio() {
   }
 }
 
-// [ADD] Proactive follow-up (silence watchdog)
-let silenceTimer = null;
-const SILENCE_MS = 7000;
-function clearSilenceTimer() {
-  if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
-}
-async function startSilenceTimer() {
-  clearSilenceTimer();
-  silenceTimer = setTimeout(async () => {
-    try {
-      if (!listening || talking) return;
-      const data = await callChat({ user_text: "", include_seed: false, no_reply: true });
-      const reply = (data.reply ?? data.text ?? "").trim();
-      if (reply) {
-        appendBubble("coach", reply);
-        history.push({ sender: "coach", text: reply });
-        lastCoach = reply;
-        await speakInChunks(reply);
-        ensureSRStart(40);
-        startSilenceTimer();
-      }
-    } catch (err) {
-      console.warn("[silence] follow-up failed", err);
-    }
-  }, SILENCE_MS);
-}
-
 // ---------- Helpers ----------
 function isVisible(el) {
   if (!el) return false;
@@ -247,14 +197,13 @@ function isVisible(el) {
 function escapeHtml(s) {
   return String(s ?? "")
     .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")   // CHANGE: add missing semicolon
+    .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 }
 
 // ==== PATCH[APPEND_BUBBLE_NAME] START ====
 // CHANGE: Display “Sunny” (not “Miss Sunny”) for coach bubbles.
 // WHY: Persona update to gender-neutral name.
-
 function appendBubble(sender, text) {
   const container = document.getElementById("messages") || logEl;
   const div = document.createElement("div");
@@ -267,8 +216,6 @@ function appendBubble(sender, text) {
 
 // ==== PATCH[MODE_TOGGLE_HANDLERS] START ====
 // CHANGE: Minimal toggle UX; no layout changes.
-// WHY: Smallest-change wiring for new modes.
-
 function toggleBtn(btn, onLabel, offLabel, flag) {
   if (!btn) return flag;
   flag = !flag;
@@ -288,7 +235,6 @@ interpreterBtn?.addEventListener("click", () => {
 tutorBtn?.addEventListener("click", () => {
   tutorMode = toggleBtn(tutorBtn, "Tutor: ON", "Tutor", tutorMode);
 });
-
 // ==== PATCH[MODE_TOGGLE_HANDLERS] END ====
 
 
@@ -386,10 +332,6 @@ async function sendFileToAnalyze(file, userPrompt = "Please help me with this.")
 }
 
 // ---------- Backend calls ----------
-// ==== PATCH[CALLCHAT_FLAGS] START ====
-// CHANGE: Send sex + feature toggles to /chat.
-// WHY: Backend composes session prompt with these flags.
-
 async function callChat({ user_text = "", include_seed = false, no_reply = false }) {
   const user = auth.currentUser;
 
@@ -424,7 +366,6 @@ async function callChat({ user_text = "", include_seed = false, no_reply = false
   if (!res.ok) throw new Error("chat failed");
   return res.json();
 }
-// ==== PATCH[CALLCHAT_FLAGS] END ====
 
 // ---------- TTS helpers ----------
 function detectVietnamese(text) {
@@ -437,9 +378,12 @@ function detectVietnamese(text) {
 let ttsController = null;
 let ttsUrl = null;
 
-function cancelSpeech() {                         // CHANGE
+function cancelSpeech() {
   try { window.speechSynthesis?.cancel?.(); } catch {}
-  try { const el = document.getElementById("ttsAudio"); if (el) { el.pause(); el.currentTime = 0; el.src = ""; } } catch {}
+  try {
+    const el = document.getElementById("ttsAudio");
+    if (el) { el.pause(); el.currentTime = 0; el.src = ""; }
+  } catch {}
   try { if (ttsUrl) { URL.revokeObjectURL(ttsUrl); ttsUrl = null; } } catch {}
   try { ttsController?.abort?.(); } catch {}
   talking = false;
@@ -468,15 +412,15 @@ async function speak(text) {
   const t = (text ?? "").trim();
   if (!t) return;
 
-  cancelSpeech();                                   // CHANGE
-  ttsController = new AbortController();            // CHANGE
+  cancelSpeech();
+  ttsController = new AbortController();
 
   try {
     const res = await fetch("/tts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text: t, voice: "alloy", format: "mp3" }),
-      signal: ttsController.signal                  // CHANGE
+      signal: ttsController.signal
     });
 
     if (!res.ok) {
@@ -486,27 +430,13 @@ async function speak(text) {
 
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
-    ttsUrl = url;                                   // CHANGE
-
-<<<<<<< HEAD
-    if (IS_IOS && !iosAudioPrimed) {
-  // In case we somehow got here before the first tap
-  await new Promise(r => {
-    const once = () => { warmupIOSAudio().finally(r); window.removeEventListener("pointerdown", once); };
-    window.addEventListener("pointerdown", once, { once:true, passive:true });
-  });
-}
+    ttsUrl = url;
 
     const audioNode = document.getElementById("ttsAudio");
     if (audioNode) {
-      audioNode.setAttribute?.("playsinline",""); // ✅ add this
+      audioNode.setAttribute?.("playsinline",""); // iOS/Safari
       audioNode.src = url;
-      audioNode.load?.();                         // ✅ and this (Safari likes it)
-=======
-    const audioNode = document.getElementById("ttsAudio");
-    if (audioNode) {
-      audioNode.src = url;
->>>>>>> REV0
+      audioNode.load?.();                         // Safari likes this
       await audioNode.play().catch(async (e) => {
         console.warn("Audio play failed; fallback to Web Speech:", e);
         try { URL.revokeObjectURL(ttsUrl); } catch {}
@@ -522,10 +452,7 @@ async function speak(text) {
     } else {
       await new Promise(async (resolve) => {
         const a = new Audio(url);
-<<<<<<< HEAD
-        a.setAttribute?.("playsinline","");    // add this
-=======
->>>>>>> REV0
+        a.setAttribute?.("playsinline","");
         a.play().catch(async (e) => {
           console.warn("Temp Audio() play failed; fallback to Web Speech:", e);
           try { URL.revokeObjectURL(ttsUrl); } catch {}
@@ -541,7 +468,7 @@ async function speak(text) {
     }
 
   } catch (err) {
-    if (err?.name === "AbortError" || /AbortError/i.test(String(err))) return; // CHANGE
+    if (err?.name === "AbortError" || /AbortError/i.test(String(err))) return;
     console.warn("Server TTS failed; using Web Speech fallback:", err);
     await speakWeb(t);
   }
@@ -590,7 +517,7 @@ async function chatTurn(userText){
       appendBubble("coach", reply);
       history.push({ sender: "coach", text: reply });
       lastCoach = reply;
-      cancelSpeech();                 // CHANGE
+      cancelSpeech();
       await speakInChunks(reply);
       startSilenceTimer();
     } else {
@@ -700,7 +627,7 @@ function realStartSR(){
       srLastHeardAt = performance.now();
       cycleSRSoon(40);
       return;
-    } 
+    }
 
     if (talking || cooldown) { cycleSRSoon(60); return; }
 
@@ -791,7 +718,7 @@ async function startFlow(){
       appendBubble("coach", reply);
       history.push({ sender: "coach", text: reply });
       lastCoach = reply;
-      cancelSpeech();            // CHANGE
+      cancelSpeech();
       await speakInChunks(reply);
       startSilenceTimer();
     } else {
@@ -812,7 +739,7 @@ async function startFlow(){
 function stopFlow(){
   listening = false;
   running   = false;
-  cancelSpeech();                // CHANGE
+  cancelSpeech();
   stopSR();
   setStatus("Idle");
 }
@@ -884,28 +811,20 @@ onAuthStateChanged(auth, async (user) => {
 
     statusEl && (statusEl.textContent = "Ready");
     authStatusEl && (authStatusEl.textContent = `Signed in as ${profile.firstName || user.email}`);
-    // ==== PATCH[AUTO_START_STOP] START ====
-// CHANGE: Auto-start the session when signed in.
-// WHY: Remove Start/Stop buttons; make it hands-free.
-<<<<<<< HEAD
-// inside onAuthStateChanged when user logs in:
-if (!listening) {
-  if (IS_IOS && !iosAudioPrimed) {
-    setStatus("Tap anywhere to begin audio…");
-    const go = async () => {
-      await warmupIOSAudio();
-      await startFlow();
-    };
-    window.addEventListener("pointerdown", go, { once: true, passive: true });
-  } else {
-    await startFlow();
-  }
-=======
-if (!listening) {
-  try { await startFlow(); } catch (e) { console.warn("auto start failed", e); }
->>>>>>> REV0
-}
-// ==== PATCH[AUTO_START_STOP] END ====
+
+    // Auto-start the session when signed in (with iOS gesture warmup if needed)
+    if (!listening) {
+      if (IS_IOS && !iosAudioPrimed) {
+        setStatus("Tap anywhere to begin audio…");
+        const go = async () => {
+          await warmupIOSAudio();
+          await startFlow();
+        };
+        window.addEventListener("pointerdown", go, { once: true, passive: true });
+      } else {
+        try { await startFlow(); } catch (e) { console.warn("auto start failed", e); }
+      }
+    }
 
   } else {
     currentUid = null;
@@ -925,71 +844,42 @@ if (!listening) {
 
     setStatus("Logged out");
     authStatusEl && (authStatusEl.textContent = "Not signed in");
-// ==== PATCH[AUTO_START_STOP] START ====
-// CHANGE: Auto-stop when signed out.
-// WHY: Keep SR/TTS quiet and reset state on logout.
-try { stopFlow(); } catch {}
-// ==== PATCH[AUTO_START_STOP] END ====
+
+    // Auto-stop when signed out.
+    try { stopFlow(); } catch {}
   }
 });
 
-// ==== PATCH[AUTH_UI_FLOW_LOGOUT_VISIBLE] START ====
-// CHANGE: Ensure the auth row is visible and Logout shows after login.
-// WHY: Some browsers kept the row collapsed when only Logout remained.
-// ==== PATCH[AUTH_UI_FLOW_LOGOUT_VISIBLE] END ====
-// ==== PATCH[AUTH_UI_FLOW_SIGNED_OUT] START ====
+// Ensure auth row is visible at load
 const authRow = logoutBtn?.parentElement;
 if (authRow) authRow.style.display = "flex";
 logoutBtn  && (logoutBtn.style.display  = "none");
 loginBtn   && (loginBtn.style.display   = "inline-flex");
 signupBtn  && (signupBtn.style.display  = "inline-flex");
-// ==== PATCH[AUTH_UI_FLOW_SIGNED_OUT] END ====
 
 // DOM ready
 window.addEventListener("DOMContentLoaded", () => {
-
-<<<<<<< HEAD
-// Prime iOS audio on first gesture
-["touchstart","pointerdown","mousedown","click"].forEach(evt => {
-  window.addEventListener(evt, warmupIOSAudio, { once: true, passive: true });
-});
-loginBtn?.addEventListener("click", warmupIOSAudio, { once: true });
-signupBtn?.addEventListener("click", warmupIOSAudio, { once: true });
-sendBtn?.addEventListener("click", warmupIOSAudio, { once: true });
-studyBtn?.addEventListener("click", warmupIOSAudio, { once: true });
-interpreterBtn?.addEventListener("click", warmupIOSAudio, { once: true });
-tutorBtn?.addEventListener("click", warmupIOSAudio, { once: true });
-
-
-=======
->>>>>>> REV0
-// ==== PATCH[AUTH_UI_FLOW_INJECT_LOGOUT] START ====
-// CHANGE: If #logoutBtn is missing in HTML, create it next to Login.
-// WHY: JS expects this element to show/hide after auth changes.
-
-if (!logoutBtn && loginBtn?.parentElement) {
-  const b = document.createElement("button");
-  b.id = "logoutBtn";
-  b.className = "btn";
-  b.textContent = "Logout";
-  b.style.display = "none";
-  loginBtn.parentElement.appendChild(b);
-  logoutBtn = b; // update the ref so later code works
-
-  // wire the click handler now that it exists
-  logoutBtn.addEventListener("click", async () => {
-    try {
-      try { stopFlow(); } catch {}
-      await signOut(auth);
-      // updateUIForSignedOut uses the live DOM and will hide this again
-      const statusEl = document.getElementById("status");
-      if (statusEl) statusEl.textContent = "Logged out";
-    } catch (e) {
-      alert("Logout failed: " + e.message);
-    }
+  // Prime iOS audio on first gesture
+  ["touchstart","pointerdown","mousedown","click"].forEach(evt => {
+    window.addEventListener(evt, warmupIOSAudio, { once: true, passive: true });
   });
-}
-// ==== PATCH[AUTH_UI_FLOW_INJECT_LOGOUT] END ====
+  loginBtn?.addEventListener("click",   warmupIOSAudio, { once: true });
+  signupBtn?.addEventListener("click",  warmupIOSAudio, { once: true });
+  sendBtn?.addEventListener("click",    warmupIOSAudio, { once: true });
+  studyBtn?.addEventListener("click",   warmupIOSAudio, { once: true });
+  interpreterBtn?.addEventListener("click", warmupIOSAudio, { once: true });
+  tutorBtn?.addEventListener("click",   warmupIOSAudio, { once: true });
+
+  // If #logoutBtn is missing in HTML, create it next to Login.
+  if (!logoutBtn && loginBtn?.parentElement) {
+    const b = document.createElement("button");
+    b.id = "logoutBtn";
+    b.className = "btn";
+    b.textContent = "Logout";
+    b.style.display = "none";
+    loginBtn.parentElement.appendChild(b);
+    logoutBtn = b; // update the ref so later code works
+  }
 
   cameraBtn?.addEventListener("click", openCameraModal);
   closeCameraBtn?.addEventListener("click", closeCameraModal);
@@ -1016,34 +906,24 @@ if (!logoutBtn && loginBtn?.parentElement) {
     fileInput.value = "";
   });
 
-  const loginForm    = document.getElementById("login-form");
+  const loginForm = document.getElementById("login-form");
   if (loginForm) {
     loginForm.addEventListener('submit', function (e) {
       e.preventDefault();
       console.log("Login form submitted");
     });
   }
+
   const loginFields  = document.getElementById("loginFields");
   const signupFields = document.getElementById("signupFields");
 
-  const emailEl = document.getElementById("email");
-  const passEl  = document.getElementById("password");
-
-  const emailSignupEl = document.getElementById("emailSignup");
-  const passSignupEl  = document.getElementById("passwordSignup");
-  const firstNameEl   = document.getElementById("firstName");
-  const lastNameEl    = document.getElementById("lastName");
-  const ageEl         = document.getElementById("age");
-  const sexEl         = document.getElementById("sex");
-  const langEl        = document.getElementById("lang") || document.getElementById("language");
-  langEl?.addEventListener("change", () => {
-    currentLang = langEl.value || "en-US";
+  // keep currentLang synced with selector
+  const langSel = document.getElementById("lang") || document.getElementById("language");
+  langSel?.addEventListener("change", () => {
+    currentLang = langSel.value || "en-US";
     try { recognizer?.abort?.(); } catch {}
     setStatus(`Listening… (${currentLang})`);
   });
-
-  const authStatusEl = document.getElementById("authStatus");
-  const statusEl     = document.getElementById("status");
 
   sendBtn?.addEventListener("click", (e) => {
     e.preventDefault();
@@ -1071,39 +951,39 @@ if (!logoutBtn && loginBtn?.parentElement) {
     hide(signupFields);
   }
 
-  // ==== PATCH[SIGNUP_CLEAR_AND_SHOW_GRID] START ====
-// CHANGE: Show Sign Up as a 2-row grid and CLEAR any previous values.
-// WHY: Avoid pre-filling with the last user's profile and match the requested layout.
-function unhideSignupInputs() {
-  const signupFields = document.getElementById("signupFields");
-  const loginFields  = document.getElementById("login-form") || document.getElementById("loginFields");
+  // Show Sign Up as a 2-row grid and CLEAR any previous values.
+  function unhideSignupInputs() {
+    const signupFields = document.getElementById("signupFields");
+    const loginFields  = document.getElementById("login-form") || document.getElementById("loginFields");
 
-  // Show signup, hide login
-  if (signupFields) signupFields.style.display = "grid";
-  if (loginFields)  loginFields.style.display  = "none";
+    if (signupFields) signupFields.style.display = "grid";
+    if (loginFields)  loginFields.style.display  = "none";
 
-  // Make sure all inputs/selects are visible
-  [firstNameEl, lastNameEl, ageEl, sexEl, langEl, emailSignupEl, passSignupEl].forEach(el => {
-    if (el) el.style.display = "inline-block";
-  });
+    [firstNameEl, lastNameEl, ageEl, sexEl, langEl,
+     document.getElementById("emailSignup"),
+     document.getElementById("passwordSignup")
+    ].forEach(el => { if (el) el.style.display = "inline-block"; });
 
-  // CLEAR any previously loaded values
-  if (firstNameEl) firstNameEl.value = "";
-  if (lastNameEl)  lastNameEl.value  = "";
-  if (ageEl)       ageEl.value       = "";
-  if (emailSignupEl) emailSignupEl.value = "";
-  if (passSignupEl)  passSignupEl.value  = "";
-  if (sexEl)  sexEl.selectedIndex  = 0;
-  if (langEl) langEl.selectedIndex = 0;
-}
-// ==== PATCH[SIGNUP_CLEAR_AND_SHOW_GRID] END ====
+    if (firstNameEl) firstNameEl.value = "";
+    if (lastNameEl)  lastNameEl.value  = "";
+    if (ageEl)       ageEl.value       = "";
+    const emailSignupEl = document.getElementById("emailSignup");
+    const passSignupEl  = document.getElementById("passwordSignup");
+    if (emailSignupEl) emailSignupEl.value = "";
+    if (passSignupEl)  passSignupEl.value  = "";
+    if (sexEl)  sexEl.selectedIndex  = 0;
+    if (langEl) langEl.selectedIndex = 0;
+  }
 
   function updateUIForSignedIn(user, profileName) {
     hide(loginFields);
     hide(signupFields);
     hide(emailEl);
     hide(passEl);
-    [firstNameEl, lastNameEl, ageEl, sexEl, langEl, emailSignupEl, passSignupEl].forEach(hide);
+    [firstNameEl, lastNameEl, ageEl, sexEl, langEl,
+     document.getElementById("emailSignup"),
+     document.getElementById("passwordSignup")
+    ].forEach(hide);
 
     showInline(logoutBtn);
     hide(loginBtn);
@@ -1118,7 +998,10 @@ function unhideSignupInputs() {
     hide(signupFields);
     hide(emailEl);
     hide(passEl);
-    [firstNameEl, lastNameEl, ageEl, sexEl, langEl, emailSignupEl, passSignupEl].forEach(hide);
+    [firstNameEl, lastNameEl, ageEl, sexEl, langEl,
+     document.getElementById("emailSignup"),
+     document.getElementById("passwordSignup")
+    ].forEach(hide);
 
     hide(logoutBtn);
     showInline(loginBtn);
@@ -1128,20 +1011,18 @@ function unhideSignupInputs() {
     setText(authStatusEl, "Not signed in");
   }
 
-// Optional: remember last chosen language so SR label is consistent
-try {
-  const savedLang = localStorage.getItem("lastPreferredLang");
-  if (savedLang) {
-    currentLang = savedLang;
-    setStatus(`Listening… (${currentLang})`);
-  }
-} catch {}
-// Persist language when the selector changes (handler already exists above)
-langEl?.addEventListener("change", () => {
-  try { localStorage.setItem("lastPreferredLang", langEl.value || "en-US"); } catch {}
-}, { once: true });
-// ==== PATCH[LOGIN_TOP_AUTOFLOW] END ====
-
+  // Optional: remember last chosen language so SR label is consistent
+  try {
+    const savedLang = localStorage.getItem("lastPreferredLang");
+    if (savedLang) {
+      currentLang = savedLang;
+      setStatus(`Listening… (${currentLang})`);
+    }
+  } catch {}
+  // Persist language once on first change (existing behavior)
+  langSel?.addEventListener("change", () => {
+    try { localStorage.setItem("lastPreferredLang", langSel.value || "en-US"); } catch {}
+  }, { once: true });
 
   loginBtn?.addEventListener("click", async (e) => {
     e.preventDefault();
@@ -1152,10 +1033,10 @@ langEl?.addEventListener("change", () => {
     const passEl  = document.getElementById("password");
 
     if (auth.currentUser) {
-  updateUIForSignedIn(auth.currentUser);
-  if (!listening) { try { await startFlow(); } catch {} }
-  return;
-}
+      updateUIForSignedIn(auth.currentUser);
+      if (!listening) { try { await startFlow(); } catch {} }
+      return;
+    }
     if (!isVisible(loginFields)) {
       loginFields && (loginFields.style.display = "flex");
       signupFields && (signupFields.style.display = "none");
@@ -1200,8 +1081,8 @@ langEl?.addEventListener("change", () => {
   });
 
   document.getElementById("enterLogin")?.addEventListener("click", async () => {
-    const email = emailEl?.value?.trim();
-    const pass  = passEl?.value?.trim();
+    const email = document.getElementById("email")?.value?.trim();
+    const pass  = document.getElementById("password")?.value?.trim();
     if (!email || !pass) {
       alert("Please enter both email and password");
       unhideLoginInputs();
@@ -1267,8 +1148,8 @@ langEl?.addEventListener("change", () => {
   }
 
   document.getElementById("enterSignup")?.addEventListener("click", async () => {
-    const email = emailSignupEl?.value?.trim();
-    const pass  = passSignupEl?.value?.trim();
+    const email = document.getElementById("emailSignup")?.value?.trim();
+    const pass  = document.getElementById("passwordSignup")?.value?.trim();
     const firstName = firstNameEl?.value?.trim();
     const lastName  = lastNameEl?.value?.trim();
     const age  = ageEl?.value?.trim();
@@ -1293,15 +1174,16 @@ langEl?.addEventListener("change", () => {
     }
   });
 
-logoutBtn?.addEventListener("click", async () => {
-  try {
-    try { stopFlow(); } catch {}        // stop immediately
-    await signOut(auth);                // onAuthStateChanged will also call stopFlow defensively
-    updateUIForSignedOut();
-  } catch (e) {
-    alert("Logout failed: " + e.message);
-  }
-});
+  logoutBtn?.addEventListener("click", async () => {
+    try {
+      try { stopFlow(); } catch {}
+      await signOut(auth);
+      updateUIForSignedOut();
+    } catch (e) {
+      alert("Logout failed: " + e.message);
+    }
+  });
+
   if (!auth.currentUser) {
     updateUIForSignedOut();
   }

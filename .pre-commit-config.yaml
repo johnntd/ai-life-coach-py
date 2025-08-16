@@ -1,0 +1,36 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: detect-merge-conflict
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: mixed-line-ending
+      - id: check-added-large-files
+      - id: check-json
+      - id: check-yaml
+      - id: check-ast
+
+  # run black (optional, remove if you don't want auto-format)
+  - repo: https://github.com/psf/black
+    rev: 24.4.2
+    hooks:
+      - id: black
+        language_version: python3
+
+  # run gitleaks at commit time (fast) and again on push (full tree)
+  - repo: local
+    hooks:
+      - id: gitleaks-commit
+        name: gitleaks (staged)
+        entry: bash -c 'gitleaks protect --staged --redact --config .gitleaks.toml'
+        language: system
+        pass_filenames: false
+        stages: [commit]
+
+      - id: gitleaks-push
+        name: gitleaks (pre-push)
+        entry: bash -c 'gitleaks detect --redact --config .gitleaks.toml'
+        language: system
+        pass_filenames: false
+        stages: [push]

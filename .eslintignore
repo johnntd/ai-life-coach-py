@@ -1,0 +1,4 @@
+static/vendor
+.venv
+node_modules
+
