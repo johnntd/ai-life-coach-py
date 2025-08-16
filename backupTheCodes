@@ -1,0 +1,10 @@
+rm ~/Downloads/main.py
+cp server/main.py ~/Downloads/.
+rm ~/Downloads/app.js
+cp static/app.js ~/Downloads/.
+rm ~/Downloads/style.css
+cp static/style.css ~/Downloads/.
+rm ~/Downloads/index.html
+cp templates/index.html ~/Downloads/.
+rm ~/Downloads/coach_system_prompt.md
+cp prompts/coach_system_prompt.md ~/Downloads/.

@@ -6,62 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="mobile-web-app-capable" content="yes" />
   <link rel="icon" href="/static/favicon.ico" />
-
-  <style>
-    :root{
-      --bg:#0a0f2a;
-      --panel:#0e1638;
-      --text:#e8ecff;
-      --accent:#2a3570;
-      --border:#202a56;
-    }
-    *{box-sizing:border-box}
-    html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
-
-    /* Kid-first layout: avatar fills screen; controls dock at bottom */
-    .wrap{
-      display:grid;
-      grid-template-rows: 1fr auto;
-      grid-template-columns: 1fr;
-      height:100%;
-    }
-
-    /* Avatar area */
-    #avatarWrap{ position:relative; background: radial-gradient(1200px 800px at 40% 30%, #1a2250, #0a0f2a); overflow:hidden; }
-    #avatarCanvas{ position:absolute; inset:0; width:100%; height:100%; display:block; }
-
-    /* Legacy CSS speaking flag (preserved) */
-    #avatar.talking::after{
-      content:"Speaking…"; position:absolute; right:10px; bottom:10px;
-      background:#0009; color:#fff; padding:6px 8px; border-radius:8px; font-size:12px;
-    }
-    #avatar{ position:absolute; inset:0; pointer-events:none; }
-
-    /* Controls */
-    #controlPanel{
-      background:var(--panel);
-      border-top:1px solid var(--border);
-      display:flex; flex-direction:column; padding:14px;
-    }
-    #statusRow{display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; gap:8px;}
-    #status{font-weight:600; opacity:.9}
-    #model{opacity:.7}
-    #log{
-      flex:1; min-height:140px; max-height:28vh; overflow:auto;
-      background:#0b1231; border:1px solid #283056; border-radius:12px; padding:10px;
-    }
-    .bubble{padding:8px 10px; margin:6px 0; border-radius:10px; max-width:100%;}
-    .bubble.you{background:#17204a;}
-    .bubble.coach{background:#1c2556;}
-    .row{display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px;}
-    .row input[type="text"], .row input[type="number"], .row select{
-      background:#0f1430; color:var(--text); border:1px solid #283056; border-radius:8px; padding:8px 10px;
-    }
-    .row button{ background:var(--accent); color:#fff; border:0; border-radius:10px; padding:9px 12px; cursor:pointer; }
-    .row button[disabled]{opacity:.5; cursor:not-allowed;}
-  </style>
-
-  <!-- Import map so the ES-module loaders can resolve "three" locally (no CORS) -->
+  <link rel="stylesheet" href="/static/style.css?v=ios-audio-1" />
   <script type="importmap">
   {
     "imports": {
@@ -80,40 +25,91 @@
       <div id="avatar"></div>
     </section>
 
-    <!-- Chat + controls (bottom dock) -->
-    <aside id="controlPanel">
-      <div id="statusRow">
-        <div id="status">Idle</div>
-        <div id="model">Model: ?</div>
-      </div>
+    <!-- Chat + Controls -->
+    <aside id="controlPanel" style="padding: 12px;">
 
+      <!-- Auth Status & Model Info -->
+      <div id="authStatus" style="font-size:13px; opacity:.7; margin-bottom:6px;"></div>
       <div id="log"></div>
+      <p id="model"></p>
 
-      <div class="row">
+      <!-- Chat Input (leave exactly as-is) -->
+      <div class="row" style="margin-bottom: 12px; gap: 8px;">
         <input id="text" type="text" placeholder="Type a message…" style="flex:1" />
         <button id="send">Send</button>
       </div>
 
-      <div class="row">
-        <input id="name" type="text" placeholder="Child name" style="min-width:160px" />
-        <input id="age" type="number" min="3" max="18" placeholder="Age" style="width:90px" />
-        <label class="row" style="gap:6px; align-items:center;">
-          <input id="teen" type="checkbox" /> Teen mode
-        </label>
+      <!-- Camera + Upload + Modes (one line) -->
+      <div id="cameraUploadRow">
+        <button id="cameraBtn" class="btn action-pill">Camera</button>
+        <button id="uploadBtn" class="btn action-pill">Upload</button>
+        <button id="studyBtn" class="btn action-pill" aria-pressed="false">Study</button>
+        <button id="interpreterBtn" class="btn action-pill" aria-pressed="false">Interpreter</button>
+        <button id="tutorBtn" class="btn action-pill" aria-pressed="false">Tutor</button>
+      </div>
+
+      <input id="fileInput" type="file" accept="image/*,.pdf" hidden>
+
+      <!-- SigninBtn signupBnt logoutBtn -->
+      <div class="row" style="gap: 8px; flex-wrap: wrap; margin-bottom: 10px;">
+  <button id="loginBtn">Login</button>
+  <button id="signupBtn">Sign Up</button>
+  <button id="logoutBtn" style="display:none;">Logout</button>
+</div>
+      <!-- Login Form -->
+      <form id="login-form" class="row" style="gap:8px;flex-wrap:wrap;display:none;">
+        <input id="email" type="email" placeholder="Email" required />
+        <input id="password" type="password" placeholder="Password" required />
+        <button type="submit" id="enterLogin">Enter</button>
+      </form>
+
+      <!-- Signup Form -->
+      <div id="signupFields" class="row" style="gap: 8px; flex-wrap: wrap; display: none;">
+        <input id="firstName" placeholder="First Name" />
+        <input id="lastName" placeholder="Last Name" />
+        <input id="age" type="number" placeholder="Age" />
+        <select id="sex">
+          <option value="">Select Sex</option>
+          <option value="f">Female</option>
+          <option value="m">Male</option>
+        </select>
         <select id="lang">
-          <option value="en-US">English (US)</option>
+          <option value="en-US">English</option>
           <option value="vi-VN">Vietnamese</option>
         </select>
+        <input id="emailSignup" type="email" placeholder="Email" />
+        <input id="passwordSignup" type="password" placeholder="Password" />
+        <button id="enterSignup">Enter</button>
       </div>
 
-      <div class="row">
-        <button id="start">Start</button>
-        <button id="stop" disabled>Stop</button>
-      </div>
-
-      <!-- TTS audio (what we also analyze for lip-sync) -->
-      <audio id="ttsAudio" preload="auto"></audio>
+      <!-- Status message -->
+      <div id="status" style="margin: 8px 0;">Idle</div>
     </aside>
+
+    <!-- Camera Modal (used by cameraBtn) -->
+    <div id="cameraModal" style="display:none; position:fixed; inset:0; background:#0009; z-index:1000; align-items:center; justify-content:center;">
+      <div style="background:#0b1f3a; padding:16px; border-radius:12px; width:min(720px,95vw);">
+        <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+          <strong style="color:#fff">Camera</strong>
+          <div style="flex:1"></div>
+          <button id="closeCamera" class="btn">Close</button>
+        </div>
+        <video id="cameraVideo" autoplay playsinline style="width:100%; border-radius:12px; background:#111"></video>
+        <canvas id="cameraCanvas" width="1280" height="720" style="display:none"></canvas>
+        <div style="display:flex; gap:8px; margin-top:10px;">
+          <button id="captureBtn" class="btn">Capture</button>
+          <button id="retakeBtn" class="btn" style="display:none;">Retake</button>
+          <div style="flex:1"></div>
+          <button id="sendSnapshotBtn" class="btn" style="display:none;">Send to Tutor</button>
+        </div>
+        <small style="color:#bcd; display:block; margin-top:6px;">
+          Tip: point at a page/exercise—Sunny will explain or help solve it.
+        </small>
+      </div>
+    </div>
+
+    <!-- TTS audio (also used for lip-sync) -->
+  <audio id="ttsAudio" preload="auto" playsinline></audio>
   </div>
 
   <!-- Three.js avatar viewer + lip-sync (kept stable) -->
@@ -181,7 +177,7 @@
         if (obj.isMesh) obj.frustumCulled = false;
         if (!headMesh && obj.isMesh && obj.morphTargetDictionary && /Head/i.test(obj.name)) headMesh = obj;
         if (!headBone && /Head\b/i.test(obj.name)) headBone = obj;
-        if (!jawBone  && /jaw/i.test(obj.name))   jawBone  = obj; // broader match
+        if (!jawBone  && /jaw/i.test(obj.name))   jawBone  = obj;
         if (!eyeL     && /LeftEye/i.test(obj.name)) eyeL   = obj;
         if (!eyeR     && /RightEye/i.test(obj.name)) eyeR  = obj;
       });
@@ -274,8 +270,6 @@
 
     onResize();
   </script>
-
-  <!-- App logic (speech, STT, TTS, chat) -->
-  <script src="/static/app.js?v=latency-baseline"></script>
+  <script type="module" src="/static/app.js?v=ios-audio-1"></script>
 </body>
 </html>

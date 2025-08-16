@@ -1,0 +1,271 @@
+:root{
+  --bg:#0077b6;      /* Ocean blue background */
+  --panel:#023e8a;   /* Darker blue panel */
+  --text:#e0f7fa;    /* Light aqua text */
+  --accent:#00b4d8;  /* Bright blue buttons */
+  --border:#90e0ef;  /* Soft border */
+}
+
+/* Base reset / mobile niceties */
+*{box-sizing:border-box}
+html{
+  -webkit-text-size-adjust:100%;
+  height:100%;
+}
+body{
+  margin:0;
+  color:var(--text);
+  background:var(--bg);
+  font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+
+  /* iOS: fill the “real” viewport height even with URL bar showing/hiding */
+  min-height:100vh;
+  min-height:100dvh;                 /* modern Safari/Chrome */
+  min-height:-webkit-fill-available; /* older Safari */
+}
+
+/* ===== Layout: avatar fills screen, controls dock at bottom ===== */
+.wrap{
+  display:grid;
+  grid-template-rows: 1fr auto;
+  grid-template-columns: 1fr;
+
+  /* Same dynamic viewport fix here */
+  min-height:100vh;
+  min-height:100dvh;
+  min-height:-webkit-fill-available;
+}
+
+/* MERGE ✱: prefer “svh” when supported (more stable on iOS) */
+@supports (height: 100svh) {
+  body { min-height: 100svh; }
+  .wrap { min-height: 100svh; }
+}
+
+/* Avatar area */
+#avatarWrap{
+  position:relative;
+  background: radial-gradient(1200px 800px at 40% 30%, #1a2250, #0a0f2a);
+  overflow:hidden;
+  z-index:1;
+
+  /* MERGE ✱: guarantee visible space for the canvas */
+  min-height: 55vh;                 /* keep at least half the screen */
+}
+#avatarCanvas{ position:absolute; inset:0; width:100%; height:100%; display:block; }
+#avatar{ position:absolute; inset:0; pointer-events:none; }
+#avatar.talking::after{
+  content:"Speaking…"; position:absolute; right:10px; bottom:10px;
+  background:#0009; color:#fff; padding:6px 8px; border-radius:8px; font-size:12px;
+}
+
+/* Controls panel (bottom) */
+#controlPanel{
+  background:var(--panel);
+  border-top:1px solid var(--border);
+  display:flex; flex-direction:column;
+  padding:14px;
+  z-index:2;                          /* ensure above canvas */
+
+  /* iPhone/iPad safe-area */
+  padding-bottom: calc(14px + env(safe-area-inset-bottom));
+}
+#statusRow{display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; gap:8px;}
+#status{font-weight:600; opacity:.9}
+#model{opacity:.7}
+
+/* Scrollable chat log: momentum scrolling on iOS */
+#log{
+  flex:1; min-height:140px; max-height:28vh; overflow:auto;
+  background:#0b1231; border:1px solid #283056; border-radius:12px; padding:10px;
+  -webkit-overflow-scrolling:touch;   /* iOS smooth scroll */
+  overscroll-behavior:contain;
+}
+
+/* Bubbles */
+.bubble{padding:8px 10px; margin:6px 0; border-radius:10px; max-width:100%;}
+.bubble.you{background:#17204a;}
+.bubble.coach{background:#1c2556;}
+
+/* ===== Rows & inputs ===== */
+.row{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  align-items:center;
+  margin-top:10px;
+}
+
+/* iOS focus-zoom fix: ensure 16px controls on phones */
+@media (max-width: 520px){
+  .row input,
+  .row select,
+  .row button,
+  #cameraUploadRow button{
+    font-size:16px;
+    line-height:1.2;
+  }
+}
+
+/* Text/number/select (chat + signup) */
+.row input[type="text"],
+.row input[type="number"],
+.row select{
+  background:#ffffff;
+  color:#0b1f3a;
+  border:1px solid rgba(0,0,0,0.2);
+  border-radius:10px;
+  padding:10px 12px;
+  min-width:220px;
+}
+
+/* Email & password (login form) */
+.row input[type="email"],
+.row input[type="password"]{
+  background:#ffffff;
+  color:#0b1f3a;
+  border:1px solid rgba(0,0,0,0.2);
+  border-radius:10px;
+  padding:10px 12px;
+  min-width:220px;
+}
+
+.row input::placeholder{ color:#6b7280; }
+
+/* Generic buttons (fallback) */
+.row button, .btn{
+  background:var(--accent);
+  color:#fff;
+  border:0;
+  border-radius:10px;
+  padding:9px 12px;
+  cursor:pointer;
+}
+.btn[disabled]{ opacity:.5; cursor:not-allowed; }
+
+/* ===== Unified pill buttons: Camera / Upload / Study / Interpreter / Tutor ===== */
+#cameraUploadRow{
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  gap:12px;
+  margin:6px 0 10px;
+}
+
+#cameraUploadRow > #cameraBtn,
+#cameraUploadRow > #uploadBtn,
+#cameraUploadRow > #studyBtn,
+#cameraUploadRow > #interpreterBtn,
+#cameraUploadRow > #tutorBtn{
+  display:inline-flex !important;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  height:48px;
+  min-width:156px;
+  padding:10px 18px;
+  border-radius:999px;
+  background: linear-gradient(180deg, var(--accent), #00a2c7);
+  border:1px solid rgba(255,255,255,.25);
+  box-shadow: 0 6px 18px rgba(0,180,216,.28), inset 0 1px 0 rgba(255,255,255,.25);
+  color:#fff;
+  font-weight:600;
+  letter-spacing:.2px;
+  white-space:nowrap;
+  transform: translateZ(0);
+  transition: transform .15s ease, box-shadow .2s ease, background .2s ease, filter .2s ease;
+  -webkit-tap-highlight-color: transparent; /* nicer iOS tap */
+}
+
+#cameraBtn::before{      content:"📷"; font-size:16px; }
+#uploadBtn::before{      content:"📎"; font-size:16px; }
+#studyBtn::before{       content:"🎓"; font-size:16px; }
+#interpreterBtn::before{ content:"🌐"; font-size:16px; }
+#tutorBtn::before{       content:"📘"; font-size:16px; }
+
+#cameraUploadRow > #cameraBtn:hover,
+#cameraUploadRow > #uploadBtn:hover,
+#cameraUploadRow > #studyBtn:hover,
+#cameraUploadRow > #interpreterBtn:hover,
+#cameraUploadRow > #tutorBtn:hover{
+  transform: translateY(-1px);
+  box-shadow: 0 10px 22px rgba(0,180,216,.35), inset 0 1px 0 rgba(255,255,255,.35);
+  filter: saturate(1.05);
+}
+#cameraUploadRow > #cameraBtn:active,
+#cameraUploadRow > #uploadBtn:active,
+#cameraUploadRow > #studyBtn:active,
+#cameraUploadRow > #interpreterBtn:active,
+#cameraUploadRow > #tutorBtn:active{
+  transform: translateY(0);
+  box-shadow: 0 4px 12px rgba(0,180,216,.25), inset 0 2px 6px rgba(0,0,0,.25);
+}
+#cameraUploadRow > #cameraBtn:focus-visible,
+#cameraUploadRow > #uploadBtn:focus-visible,
+#cameraUploadRow > #studyBtn:focus-visible,
+#cameraUploadRow > #interpreterBtn:focus-visible,
+#cameraUploadRow > #tutorBtn:focus-visible{
+  outline:2px solid #90e0ef;
+  outline-offset:2px;
+}
+
+/* Small screens: stack action pills full-width */
+@media (max-width:520px){
+  #cameraUploadRow > #cameraBtn,
+  #cameraUploadRow > #uploadBtn,
+  #cameraUploadRow > #studyBtn,
+  #cameraUploadRow > #interpreterBtn,
+  #cameraUploadRow > #tutorBtn{
+    width:100%;
+  }
+}
+
+/* Legacy dark inputs for lower panel (kept for visual consistency there) */
+.row input[type="text"],
+.row input[type="number"],
+.row select{
+  background:#0f1430;
+  color:var(--text);
+  border:1px solid #283056;
+  border-radius:8px;
+  padding:8px 10px;
+}
+
+/* Promote Camera & Upload buttons (if referenced outside #cameraUploadRow) */
+#cameraBtn, #uploadBtn{
+  margin-bottom:8px; /* spacing so they don't look flush */
+}
+
+/* Centered Camera & Upload wrapper (legacy alias) */
+#cameraUploadContainer{
+  display:flex; justify-content:center; align-items:center; gap:12px; margin-top:8px;
+}
+@media (max-width:520px){
+  #cameraUploadContainer{ flex-direction:column; gap:6px; }
+}
+
+/* Auth status color (readable) */
+#authStatus{ color:#0b1f3a; }
+
+/* ===== Camera modal: respect safe area on iPhone ===== */
+#cameraModal{ padding: env(safe-area-inset-top) env(safe-area-inset-right) calc(env(safe-area-inset-bottom)) env(safe-area-inset-left); }
+#cameraModal > div{ padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
+
+/* Misc touch improvements */
+button, .btn{ touch-action:manipulation; }
+
+/* Use small viewport units to avoid iOS URL bar jumps */
+#log { max-height: 32svh; }
+
+/* Give the avatar area a sensible min height on phones */
+@media (max-width: 520px){
+  #avatarWrap { min-height: 46svh; }
+}
+
+/* Make the input row and action pills truly full-width on narrow screens */
+@media (max-width: 520px){
+  .row { flex-direction: column; align-items: stretch; }
+  .row > * { width: 100% !important; }
+  #cameraUploadRow { flex-direction: column; width: 100%; }
+  #cameraUploadRow > * { width: 100% !important; }
+}

@@ -1,0 +1,10 @@
+title = "local allowlist"
+
+[allowlist]
+  description = "Allow Firebase web apiKey (public, required on client)"
+  regexes = [
+    '''AIza[0-9A-Za-z\-_]{35}'''
+  ]
+  paths = [
+    '''^static/app\.js$'''
+  ]
