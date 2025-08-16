@@ -26,3 +26,11 @@ __pycache__/
 # Node/browser bundles (if any)
 dist/
 build/
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# OS
+.DS_Store
